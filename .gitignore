@@ -1,0 +1,8 @@
+inotask
+*.o
+*.d
+
+*~
+*.swp
+*.swo
+.DS_Store
