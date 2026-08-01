@@ -181,6 +181,7 @@ it_cfg_errc it_config_add_task(it_config *cfg, const char *name,
 
 it_cfg_errc it_config_add_rule(it_config *cfg, const char *name,
                                const char *watch_path, it_event_mask events,
+                               uint32_t settle_ms,
                                const char *const *include_patterns,
                                size_t include_n,
                                const char *const *exclude_patterns,
@@ -225,6 +226,7 @@ it_cfg_errc it_config_add_rule(it_config *cfg, const char *name,
     if (!str_set(&r->name, name)) return IT_CFG_ENOMEM;
     if (!str_set(&r->watch_path, watch_path)) { str_free(&r->name); return IT_CFG_ENOMEM; }
     r->events = events;
+    r->settle_ms = settle_ms;
     for (i = 0; i < include_n; i++) {
         rc = str_vec_push(&r->include, include_patterns[i]);
         if (rc != IT_CFG_OK) {

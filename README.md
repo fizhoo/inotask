@@ -5,7 +5,8 @@ It watches configured paths, matches events against rules, and launches tasks
 with `fork()` + `execv()` when rules fire.
 
 It is aimed at simple, explicit per-file workflows where one matching event can
-launch one new process immediately.
+launch one new process immediately, with optional per-path settling for noisy
+events such as `MODIFY`.
 
 The current design is intentionally simple:
 
@@ -23,6 +24,7 @@ The current design is intentionally simple:
 - rule-driven config with derived watch merging
 - per-event placeholder expansion in task arguments
 - glob-style `include` / `exclude` filename filtering
+- optional per-rule `settle_ms` quiet window for noisy paths
 - startup validation of executable paths
 - `CLOSE_WRITE` support for ingestion-style workflows
 - async child launching with zombie reaping
@@ -120,6 +122,22 @@ For ingestion-style workflows, `CREATE` or `MODIFY` may fire while a file is
 still being written. `CLOSE_WRITE` is usually the better trigger when you want
 to process a file after the writing side closes it.
 
+For `MODIFY`-driven workflows, use `settle_ms` when repeated writes should
+become one task launch after the path is quiet:
+
+```cfg
+rule docs_changed {
+    watch = "/project/docs"
+    events = [ MODIFY ]
+    include = [ "*.md" ]
+    settle_ms = 250
+    run = [ "rebuild_index" ]
+}
+```
+
+If `settle_ms` is omitted, it defaults to `0`, preserving immediate dispatch.
+For ingestion based on `CLOSE_WRITE`, a settle window is usually unnecessary.
+
 ## Configuration model
 
 A config file defines:
@@ -152,6 +170,7 @@ At runtime:
 - one inotify file descriptor is opened
 - each event is matched against rules
 - optional filename filters are applied at the rule level
+- rules with `settle_ms` wait until each matching full path is quiet
 - each matching task is launched with `execv()`
 
 See `docs/design.md` for the architecture and design notes.
@@ -181,6 +200,7 @@ Notable current limitations:
 - no recursive watch walking
 - one matching event launches one new child process immediately
 - no per-file queueing or throttling yet
+- `settle_ms` coalesces repeated events for the same rule and full path
 - no shell command strings; tasks use `execv()` with explicit args
 
 ## Documentation

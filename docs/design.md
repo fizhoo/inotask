@@ -150,15 +150,20 @@ Current policy is intentionally simple:
 
 - one incoming event record
 - zero or more matching rules
-- one new task launch per matched task
+- immediate rules launch one new task per matched task
+- rules with `settle_ms` launch after each matching full path becomes quiet
 
 There is currently:
 
 - no queue
 - no throttling
-- no coalescing
 - no per-file flood protection
 - no bounded child-process pool
+
+`settle_ms` is the one intentional coalescing mechanism. It is configured per
+rule and grouped by full path. Repeated matching events for the same rule and
+full path reset that path's timer; when the timer expires, the rule runs once
+for the settled path.
 
 This matches the current project goal of straightforward per-event launching.
 
@@ -202,6 +207,7 @@ It gives a working end-to-end daemon with:
 - shell-free task launching
 - child reaping
 - useful ingestion-ready `CLOSE_WRITE` support
+- optional per-path settling for noisy `MODIFY` workflows
 
 More advanced scheduling, queueing, and flood-control behavior can be layered on
 later without having to discard the current model.
@@ -353,6 +359,7 @@ Many filesystem operations produce bursts rather than one clean event.
 `inotask` should eventually support:
 
 - per-rule debounce windows
+- richer settled-event logging and metrics
 - per-file duplicate suppression
 - aggregate task mode for "run once after the burst"
 - event summaries passed to aggregate tasks through a file or environment

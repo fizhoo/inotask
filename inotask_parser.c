@@ -122,6 +122,29 @@ static bool parse_ident(parser *p, char **out)
     return true;
 }
 
+static bool parse_u32(parser *p, uint32_t *out, const char *name)
+{
+    uint32_t value = 0;
+    size_t digit_index;
+    if (p->cur.kind != IT_TOK_NUMBER) {
+        char buf[128];
+        (void)snprintf(buf, sizeof(buf), "expected numeric %s value", name);
+        return fail(p, "%s", buf);
+    }
+    for (digit_index = 0; digit_index < p->cur.len; digit_index++) {
+        const unsigned char digit = (unsigned char)p->cur.text[digit_index];
+        if (value > (UINT32_MAX - (uint32_t)(digit - '0')) / 10u) {
+            char buf[128];
+            (void)snprintf(buf, sizeof(buf), "%s value is too large", name);
+            return fail(p, "%s", buf);
+        }
+        value = value * 10u + (uint32_t)(digit - '0');
+    }
+    *out = value;
+    advance(p);
+    return true;
+}
+
 /**
  * @brief Convert a parsed event identifier token into an event-mask bit.
  *
@@ -295,8 +318,9 @@ static bool parse_rule(parser *p)
     char **run = NULL;
     size_t include_n = 0, exclude_n = 0, run_n = 0;
     bool have_watch = false, have_events = false, have_include = false,
-         have_exclude = false, have_run = false;
+         have_exclude = false, have_run = false, have_settle_ms = false;
     it_event_mask events = 0;
+    uint32_t settle_ms = IT_RULE_SETTLE_MS_DEFAULT;
     advance(p);
     if (!parse_ident(p, &name)) return false;
     if (!expect(p, IT_TOK_LBRACE, "'{'")) { free(name); return false; }
@@ -319,6 +343,11 @@ static bool parse_rule(parser *p)
             if (have_run) { fail(p, "duplicate rule field 'run'%s", ""); goto bad; }
             if (!parse_string_list(p, &run, &run_n, "run")) goto bad;
             have_run = true;
+        } else if (strcmp(field, "settle_ms") == 0) {
+            free(field); field = NULL;
+            if (have_settle_ms) { fail(p, "duplicate rule field 'settle_ms'%s", ""); goto bad; }
+            if (!parse_u32(p, &settle_ms, "settle_ms")) goto bad;
+            have_settle_ms = true;
         } else if (strcmp(field, "include") == 0) {
             free(field); field = NULL;
             if (have_include) { fail(p, "duplicate rule field 'include'%s", ""); goto bad; }
@@ -340,6 +369,7 @@ static bool parse_rule(parser *p)
     if (!have_run) { fail(p, "rule missing required field 'run'%s", ""); goto bad; }
     {
         it_cfg_errc rc = it_config_add_rule(p->cfg, name, watch, events,
+                                             settle_ms,
                                              (const char *const *)include, include_n,
                                              (const char *const *)exclude, exclude_n,
                                              (const char *const *)run, run_n);

@@ -156,9 +156,10 @@ It currently owns the live daemon behavior:
 
 - startup summary printing
 - `SIGCHLD` handling and child reaping
-- blocking reads from the `inotify` fd
+- `poll()` on the `inotify` fd with settled-event timeouts
 - per-event rule matching
 - include/exclude filename filtering with `fnmatch()`
+- per-rule, per-full-path `settle_ms` scheduling
 - runtime placeholder expansion for task arguments
 - `fork()` + `execv()` task launching
 - child exit status logging
@@ -199,14 +200,16 @@ The derived watch only controls what the kernel reports to us.
 
 At runtime, the event loop does this:
 
-1. block in `read()` on the single `inotify` fd
-2. receive one or more raw `struct inotify_event` records
-3. map each event `wd` back to a watched path target
-4. convert the Linux mask to the internal `it_event_mask`
-5. log the event summary
-6. scan configured rules for matches
-7. for each matching task, build argv and launch a child
-8. periodically reap dead children when `SIGCHLD` has fired
+1. reap dead children when `SIGCHLD` has fired
+2. launch any settled events whose quiet timers have expired
+3. compute the next settle timeout, if any
+4. `poll()` the single `inotify` fd with that timeout
+5. receive one or more raw `struct inotify_event` records
+6. map each event `wd` back to a watched path target
+7. convert the Linux mask to the internal `it_event_mask`
+8. log the event summary
+9. scan configured rules for matches
+10. either launch matching tasks immediately or update a settle timer
 
 ### Rule matching flow
 
@@ -223,6 +226,22 @@ full path.
 Important edge case:
 if a rule has `include` or `exclude` filters, but the event has no
 `entry_name`, that rule does not match.
+
+### Settled event flow
+
+`settle_ms` defaults to `0`. Rules with that default launch immediately.
+
+When a matching rule has a non-zero `settle_ms`, the event is stored in a
+pending settled-event list keyed by rule index and full path. If another
+matching event arrives for the same rule and full path before the quiet window
+expires, the existing pending event is updated and its due time is pushed out.
+
+When the pending event becomes due, `inotask_main.c` builds event variables
+from the settled path and launches the rule's tasks once.
+
+This is intended for noisy events such as `MODIFY`. `CLOSE_WRITE` ingestion
+rules usually do not need settling because the event already means the writing
+side closed the file.
 
 ### Placeholder expansion flow
 

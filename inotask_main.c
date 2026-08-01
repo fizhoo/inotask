@@ -12,10 +12,13 @@
 
 #include <errno.h>
 #include <fnmatch.h>
+#include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/inotify.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -132,6 +135,14 @@ static void print_rule_line(const it_rule *rule)
         append_text(filters, sizeof(filters), "[");
         append_str_vec_quoted(&rule->exclude, filters, sizeof(filters));
         append_text(filters, sizeof(filters), "]");
+        first = false;
+    }
+    if (rule->settle_ms != IT_RULE_SETTLE_MS_DEFAULT) {
+        char settle[32];
+        if (!first) append_text(filters, sizeof(filters), " ");
+        (void)snprintf(settle, sizeof(settle), "settle_ms=%u",
+                       (unsigned)rule->settle_ms);
+        append_text(filters, sizeof(filters), settle);
     }
     str_vec_to_buf(&rule->run, run, sizeof(run));
     printf("%-16s %-20s %-22s %-28s %s\n",
@@ -166,7 +177,7 @@ static void print_config_summary(const it_config *cfg,
     }
     printf("\nRULES\n");
     printf("%-16s %-20s %-22s %-28s %s\n",
-           "NAME", "WATCH", "EVENTS", "FILTERS", "RUN");
+           "NAME", "WATCH", "EVENTS", "FILTERS/POLICY", "RUN");
     printf("%-16s %-20s %-22s %-28s %s\n", "----------------", "--------------------",
            "----------------------", "----------------------------",
            "------------------------------");
@@ -238,6 +249,128 @@ typedef struct it_event_vars {
     const char *full_path;
     const char *event_name;
 } it_event_vars;
+
+typedef struct it_pending_event {
+    size_t rule_index;
+    it_event_mask events;
+    char *entry_name;
+    char *full_path;
+    uint64_t due_ms;
+} it_pending_event;
+
+typedef struct it_pending_event_vec {
+    it_pending_event *v;
+    size_t n;
+    size_t cap;
+} it_pending_event_vec;
+
+static uint64_t monotonic_ms(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static char *dup_cstr(const char *src)
+{
+    size_t len;
+    char *copy;
+    if (!src) return NULL;
+    len = strlen(src);
+    copy = (char *)malloc(len + 1);
+    if (!copy) return NULL;
+    memcpy(copy, src, len + 1);
+    return copy;
+}
+
+static void pending_event_free(it_pending_event *pending)
+{
+    if (!pending) return;
+    free(pending->entry_name);
+    free(pending->full_path);
+    memset(pending, 0, sizeof(*pending));
+}
+
+static void pending_event_vec_init(it_pending_event_vec *pending)
+{
+    memset(pending, 0, sizeof(*pending));
+}
+
+static void pending_event_vec_free(it_pending_event_vec *pending)
+{
+    size_t item_index;
+    if (!pending) return;
+    for (item_index = 0; item_index < pending->n; item_index++)
+        pending_event_free(&pending->v[item_index]);
+    free(pending->v);
+    memset(pending, 0, sizeof(*pending));
+}
+
+static bool pending_event_vec_push(it_pending_event_vec *pending,
+                                   size_t rule_index, it_event_mask events,
+                                   const char *entry_name,
+                                   const char *full_path,
+                                   uint64_t due_ms)
+{
+    it_pending_event *grown;
+    it_pending_event *slot;
+    size_t new_cap;
+    if (pending->n == pending->cap) {
+        new_cap = pending->cap ? pending->cap * 2u : 8u;
+        grown = (it_pending_event *)realloc(pending->v,
+                                            new_cap * sizeof(*grown));
+        if (!grown) return false;
+        pending->v = grown;
+        pending->cap = new_cap;
+    }
+    slot = &pending->v[pending->n];
+    memset(slot, 0, sizeof(*slot));
+    slot->entry_name = dup_cstr(entry_name);
+    slot->full_path = dup_cstr(full_path);
+    if (!slot->entry_name || !slot->full_path) {
+        pending_event_free(slot);
+        return false;
+    }
+    slot->rule_index = rule_index;
+    slot->events = events;
+    slot->due_ms = due_ms;
+    pending->n++;
+    return true;
+}
+
+static bool settle_event(it_pending_event_vec *pending, size_t rule_index,
+                         it_event_mask events, const char *entry_name,
+                         const char *full_path, uint32_t settle_ms)
+{
+    size_t item_index;
+    const uint64_t due_ms = monotonic_ms() + (uint64_t)settle_ms;
+    for (item_index = 0; item_index < pending->n; item_index++) {
+        it_pending_event *item = &pending->v[item_index];
+        if (item->rule_index == rule_index &&
+            strcmp(item->full_path, full_path) == 0) {
+            item->events |= events;
+            item->due_ms = due_ms;
+            return true;
+        }
+    }
+    return pending_event_vec_push(pending, rule_index, events, entry_name,
+                                  full_path, due_ms);
+}
+
+static int pending_event_timeout_ms(const it_pending_event_vec *pending,
+                                    uint64_t now_ms)
+{
+    size_t item_index;
+    uint64_t soonest_ms;
+    if (!pending || pending->n == 0) return -1;
+    soonest_ms = pending->v[0].due_ms;
+    for (item_index = 1; item_index < pending->n; item_index++)
+        if (pending->v[item_index].due_ms < soonest_ms)
+            soonest_ms = pending->v[item_index].due_ms;
+    if (soonest_ms <= now_ms) return 0;
+    if (soonest_ms - now_ms > (uint64_t)INT_MAX) return INT_MAX;
+    return (int)(soonest_ms - now_ms);
+}
 
 static bool append_bytes(char **buf, size_t *len, size_t *cap,
                          const char *src, size_t src_n)
@@ -549,6 +682,55 @@ static void launch_task(const it_rule *rule, const it_task *task,
     free_exec_argv(task, argv);
 }
 
+static void launch_rule_tasks(const it_config *cfg, const it_rule *rule,
+                              const it_event_vars *vars)
+{
+    size_t task_index;
+    for (task_index = 0; task_index < rule->run.n; task_index++) {
+        const it_task *task = find_task(cfg, &rule->run.v[task_index]);
+        if (!task) continue;
+        launch_task(rule, task, vars);
+    }
+}
+
+static void remove_pending_event(it_pending_event_vec *pending,
+                                 size_t pending_index)
+{
+    pending_event_free(&pending->v[pending_index]);
+    if (pending_index + 1u < pending->n) {
+        memmove(&pending->v[pending_index], &pending->v[pending_index + 1u],
+                (pending->n - pending_index - 1u) * sizeof(pending->v[0]));
+    }
+    pending->n--;
+}
+
+static void launch_due_settled_events(const it_config *cfg,
+                                      it_pending_event_vec *pending,
+                                      uint64_t now_ms)
+{
+    size_t pending_index = 0;
+    while (pending_index < pending->n) {
+        char events[64];
+        it_event_vars vars;
+        const it_pending_event item = pending->v[pending_index];
+        const it_rule *rule;
+        if (item.due_ms > now_ms) {
+            pending_index++;
+            continue;
+        }
+        rule = &cfg->rules.v[item.rule_index];
+        events_to_buf(item.events, events, sizeof(events));
+        vars.watch_path = rule->watch_path.s;
+        vars.entry_name = item.entry_name;
+        vars.full_path = item.full_path;
+        vars.event_name = events;
+        it_log_info("settled rule=%s event=%s path=%s",
+                    rule->name.s, events, item.full_path);
+        launch_rule_tasks(cfg, rule, &vars);
+        remove_pending_event(pending, pending_index);
+    }
+}
+
 /**
  * @brief Match a normalized event against configured rules and run any tasks
  *        referenced by matching rules.
@@ -559,9 +741,10 @@ static void launch_task(const it_rule *rule, const it_task *task,
  * @param name Optional entry name reported by inotify.
  */
 static void dispatch_event(const it_config *cfg, const it_watch_target *target,
-                           it_event_mask mask, const char *name)
+                           it_event_mask mask, const char *name,
+                           it_pending_event_vec *pending)
 {
-    size_t i;
+    size_t rule_index;
     char events[64];
     char *full_path;
     bool any = false;
@@ -591,18 +774,27 @@ static void dispatch_event(const it_config *cfg, const it_watch_target *target,
     if (name && *name) it_log_info("event path=%s entry=%s events=%s",
                                    target->path.s, name, events);
     else it_log_info("event path=%s events=%s", target->path.s, events);
-    for (i = 0; i < cfg->rules.n; i++) {
-        const it_rule *rule = &cfg->rules.v[i];
-        size_t j;
+    for (rule_index = 0; rule_index < cfg->rules.n; rule_index++) {
+        const it_rule *rule = &cfg->rules.v[rule_index];
+        const it_event_mask matched_events = rule->events & mask;
         if (!str_eq_cstr(&rule->watch_path, target->path.s)) continue;
-        if ((rule->events & mask) == 0) continue;
+        if (matched_events == 0) continue;
         if (!rule_name_filter_matches(rule, vars.entry_name)) continue;
         any = true;
         it_log_info("rule %s matched", rule->name.s);
-        for (j = 0; j < rule->run.n; j++) {
-            const it_task *task = find_task(cfg, &rule->run.v[j]);
-            if (!task) continue;
-            launch_task(rule, task, &vars);
+        if (rule->settle_ms != IT_RULE_SETTLE_MS_DEFAULT) {
+            if (settle_event(pending, rule_index, matched_events,
+                             vars.entry_name, vars.full_path,
+                             rule->settle_ms)) {
+                it_log_info("settling rule=%s path=%s quiet_ms=%u",
+                            rule->name.s, vars.full_path,
+                            (unsigned)rule->settle_ms);
+            } else {
+                it_log_error("cannot allocate settled event for rule=%s path=%s",
+                             rule->name.s, vars.full_path);
+            }
+        } else {
+            launch_rule_tasks(cfg, rule, &vars);
         }
     }
     if (!any) it_log_info("no rule matched");
@@ -614,11 +806,25 @@ static void print_usage(const char *program)
     (void)fprintf(stderr, "usage: %s [--check] <config-file>\n", program);
 }
 
+static void warn_check_findings(const it_config *cfg)
+{
+    size_t rule_index;
+    for (rule_index = 0; rule_index < cfg->rules.n; rule_index++) {
+        const it_rule *rule = &cfg->rules.v[rule_index];
+        if ((rule->events & IT_EVT_MODIFY) != 0 &&
+            rule->settle_ms == IT_RULE_SETTLE_MS_DEFAULT) {
+            it_log_warn("rule %s watches MODIFY with settle_ms=0; active writes may launch repeated tasks",
+                        rule->name.s);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     it_config cfg;
     it_runtime_plan plan;
     it_runtime_session session;
+    it_pending_event_vec pending;
     const char *config_path;
     bool check_only = false;
     char buf[4096];
@@ -635,26 +841,32 @@ int main(int argc, char **argv)
     if (!it_load_config_file(config_path, &cfg)) return 1;
     it_runtime_plan_init(&plan);
     it_runtime_session_init(&session);
+    pending_event_vec_init(&pending);
     if (!it_runtime_plan_build(&cfg, &plan)) {
         it_log_error("cannot build runtime watch plan");
+        pending_event_vec_free(&pending);
         it_config_free(&cfg);
         return 1;
     }
     print_config_summary(&cfg, &plan);
     if (check_only) {
+        warn_check_findings(&cfg);
         printf("\nConfig check passed; runtime watches were not opened.\n");
+        pending_event_vec_free(&pending);
         it_runtime_plan_free(&plan);
         it_config_free(&cfg);
         return 0;
     }
     if (!it_runtime_session_open(&cfg, &plan, &session)) {
         it_log_error("cannot open inotify watches");
+        pending_event_vec_free(&pending);
         it_runtime_plan_free(&plan);
         it_config_free(&cfg);
         return 1;
     }
     if (!install_sigchld_handler()) {
         it_log_error("cannot install SIGCHLD handler: %s", strerror(errno));
+        pending_event_vec_free(&pending);
         it_runtime_session_free(&session);
         it_runtime_plan_free(&plan);
         it_config_free(&cfg);
@@ -662,46 +874,77 @@ int main(int argc, char **argv)
     }
     it_log_info("watching for filesystem events; press Ctrl-C to stop");
     for (;;) {
-        ssize_t nread;
-        size_t off = 0;
+        struct pollfd watch_poll;
+        int poll_timeout;
+        int poll_result;
+        uint64_t now_ms;
         if (g_reap_requested) reap_children();
-        nread = read(session.fd, buf, sizeof(buf));
-        if (nread < 0) {
+        now_ms = monotonic_ms();
+        launch_due_settled_events(&cfg, &pending, now_ms);
+        poll_timeout = pending_event_timeout_ms(&pending, monotonic_ms());
+        watch_poll.fd = session.fd;
+        watch_poll.events = POLLIN;
+        watch_poll.revents = 0;
+        poll_result = poll(&watch_poll, 1, poll_timeout);
+        if (poll_result < 0) {
             if (errno == EINTR) {
                 if (g_reap_requested) reap_children();
                 continue;
             }
-            it_log_error("inotify read failed: %s", strerror(errno));
+            it_log_error("poll failed: %s", strerror(errno));
             break;
         }
-        if (nread == 0) {
-            it_log_warn("inotify stream closed");
-            break;
+        if (poll_result == 0) {
+            continue;
         }
-        while (off + sizeof(struct inotify_event) <= (size_t)nread) {
-            const struct inotify_event *ev =
-                (const struct inotify_event *)(const void *)(buf + off);
-            size_t ev_size = sizeof(*ev) + ev->len;
-            const it_watch_target *target =
-                NULL;
-            it_event_mask mask;
-            if (ev_size > (size_t)nread - off) {
-                it_log_warn("truncated inotify event record; stopping event parsing");
+        if ((watch_poll.revents & POLLIN) != 0) {
+            ssize_t nread;
+            size_t off = 0;
+            nread = read(session.fd, buf, sizeof(buf));
+            if (nread < 0) {
+                if (errno == EINTR) {
+                    if (g_reap_requested) reap_children();
+                    continue;
+                }
+                it_log_error("inotify read failed: %s", strerror(errno));
                 break;
             }
-            target = it_runtime_session_target_for_wd(&plan, &session, ev->wd);
-            if (!target) {
-                off += ev_size;
-                continue;
+            if (nread == 0) {
+                it_log_warn("inotify stream closed");
+                break;
             }
-            mask = it_runtime_event_mask_from_inotify(ev->mask);
-            if (mask != 0)
-                dispatch_event(&cfg, target, mask, ev->len ? ev->name : "");
-            off += ev_size;
+            while (off + sizeof(struct inotify_event) <= (size_t)nread) {
+                const struct inotify_event *ev =
+                    (const struct inotify_event *)(const void *)(buf + off);
+                size_t ev_size = sizeof(*ev) + ev->len;
+                const it_watch_target *target =
+                    NULL;
+                it_event_mask mask;
+                if (ev_size > (size_t)nread - off) {
+                    it_log_warn("truncated inotify event record; stopping event parsing");
+                    break;
+                }
+                target = it_runtime_session_target_for_wd(&plan, &session, ev->wd);
+                if (!target) {
+                    off += ev_size;
+                    continue;
+                }
+                mask = it_runtime_event_mask_from_inotify(ev->mask);
+                if (mask != 0)
+                    dispatch_event(&cfg, target, mask, ev->len ? ev->name : "",
+                                   &pending);
+                off += ev_size;
+            }
+        }
+        if ((watch_poll.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            it_log_error("inotify poll reported revents=0x%x",
+                         watch_poll.revents);
+            break;
         }
         if (g_reap_requested) reap_children();
     }
     reap_children();
+    pending_event_vec_free(&pending);
     it_runtime_session_free(&session);
     it_runtime_plan_free(&plan);
     it_config_free(&cfg);

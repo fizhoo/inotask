@@ -74,6 +74,7 @@ A rule has:
 - an event list
 - optional `include` patterns
 - optional `exclude` patterns
+- optional `settle_ms` quiet window
 - a `run` list of task names
 
 Example:
@@ -140,6 +141,30 @@ Example:
 exclude = [ "#*", ".*", "*.swp", "*.tmp" ]
 ```
 
+#### `settle_ms`
+
+Optional quiet period in milliseconds before a matching rule launches its
+tasks. If omitted, the value defaults to `0`, which means immediate dispatch.
+
+Settling is per rule and per matching `{full_path}`. Repeated matching events
+for the same rule and full path reset that path's timer. When the path has been
+quiet for the configured interval, `inotask` launches one job for that path.
+
+Example:
+
+```cfg
+settle_ms = 250
+```
+
+This is useful for noisy `MODIFY` workflows, where one logical file update may
+produce many low-level modification events.
+
+For ingestion workflows that use `CLOSE_WRITE`, a settle window is usually not
+needed because `CLOSE_WRITE` already means the writer closed the file.
+
+If a rule uses `MODIFY` with the default `settle_ms = 0`, `--check` emits a
+warning because active writes may launch repeated tasks.
+
 ## Supported event names
 
 Current supported events are:
@@ -157,7 +182,9 @@ Current supported events are:
 Triggers when a file or directory is created inside a watched directory.
 
 #### `MODIFY`
-Triggers on file modification activity.
+Triggers on file modification activity. This event can be noisy while a writer
+is actively changing a file. Use `settle_ms` when you want to process the path
+after it has been quiet instead of launching on every delivered modify event.
 
 #### `DELETE`
 Triggers when a file or directory is deleted.
@@ -312,5 +339,6 @@ opening runtime watches:
 
 - Tasks are launched with `execv()`, not through a shell.
 - Runtime logs include the expanded argv passed to `execv()`.
+- `settle_ms` defaults to `0`.
 - Unknown placeholders are currently left unchanged.
 - One matching event currently launches one new child process per matching task.

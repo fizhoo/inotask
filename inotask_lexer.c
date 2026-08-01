@@ -116,6 +116,13 @@ it_token it_lexer_next(it_lexer *lx)
         return token(IT_TOK_IDENT, lx->buf + start, lx->pos - start, line, col);
     }
 
+    if (isdigit((unsigned char)c)) {
+        (void)take(lx);
+        while ((c = peek(lx)) != EOF && isdigit((unsigned char)c))
+            (void)take(lx);
+        return token(IT_TOK_NUMBER, lx->buf + start, lx->pos - start, line, col);
+    }
+
     (void)take(lx);
     return token(IT_TOK_ERROR, lx->buf + start, 1, line, col);
 }
@@ -126,6 +133,7 @@ const char *it_tok_kind_str(it_tok_kind kind)
         case IT_TOK_EOF: return "end of file";
         case IT_TOK_ERROR: return "invalid token";
         case IT_TOK_IDENT: return "identifier";
+        case IT_TOK_NUMBER: return "number";
         case IT_TOK_STRING: return "string";
         case IT_TOK_LBRACE: return "{";
         case IT_TOK_RBRACE: return "}";

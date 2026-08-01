@@ -16,6 +16,7 @@ typedef enum it_tok_kind {
     IT_TOK_EOF = 0,
     IT_TOK_ERROR,
     IT_TOK_IDENT,
+    IT_TOK_NUMBER,
     IT_TOK_STRING,
     IT_TOK_LBRACE,
     IT_TOK_RBRACE,

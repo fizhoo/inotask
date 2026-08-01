@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define IT_RULE_SETTLE_MS_DEFAULT 0u
+
 /**
  * @brief Owned string value used throughout the configuration model.
  *
@@ -83,6 +85,7 @@ typedef struct it_rule {
     it_str name;
     it_str watch_path;
     it_event_mask events;
+    uint32_t settle_ms;
     it_str_vec include;
     it_str_vec exclude;
     it_str_vec run;
@@ -192,6 +195,7 @@ it_cfg_errc it_config_add_task(it_config *cfg, const char *name,
  * @param name Rule name.
  * @param watch_path Absolute path watched by the rule.
  * @param events Event mask that triggers the rule.
+ * @param settle_ms Quiet period in milliseconds before running matching tasks.
  * @param include_patterns Optional glob-style filename patterns that must
  *        match the event entry name.
  * @param include_n Number of entries in @p include_patterns.
@@ -209,6 +213,7 @@ it_cfg_errc it_config_add_task(it_config *cfg, const char *name,
  */
 it_cfg_errc it_config_add_rule(it_config *cfg, const char *name,
                                const char *watch_path, it_event_mask events,
+                               uint32_t settle_ms,
                                const char *const *include_patterns,
                                size_t include_n,
                                const char *const *exclude_patterns,
