@@ -301,8 +301,16 @@ Current validation includes:
 
 This means many configuration mistakes are rejected before any `inotify` watches are opened.
 
+You can run the same parse, validation, and derived-watch planning without
+opening runtime watches:
+
+```sh
+./inotask --check inotaskd.cfg
+```
+
 ## Notes
 
 - Tasks are launched with `execv()`, not through a shell.
+- Runtime logs include the expanded argv passed to `execv()`.
 - Unknown placeholders are currently left unchanged.
 - One matching event currently launches one new child process per matching task.

@@ -26,6 +26,8 @@ The current design is intentionally simple:
 - startup validation of executable paths
 - `CLOSE_WRITE` support for ingestion-style workflows
 - async child launching with zombie reaping
+- `--check` mode for parse/validate without opening watches
+- launch logs include the expanded `execv()` argument vector
 
 ## Current status
 
@@ -76,9 +78,16 @@ make
 ./inotask inotaskd.cfg
 ```
 
+Check a config without opening runtime watches:
+
+```sh
+./inotask --check inotaskd.cfg
+```
+
 Helper make targets:
 
 ```sh
+make check
 make run
 make live
 make edit
@@ -156,7 +165,7 @@ Examples:
 
 - config load failures
 - rule matches
-- task launches
+- task launches with expanded argv
 - child reap status
 
 When run under `systemd`, stderr is typically captured by `journald`.

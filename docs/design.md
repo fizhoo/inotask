@@ -172,10 +172,13 @@ Logged events currently include:
 - config/load errors
 - runtime watch startup issues
 - event matches
-- task launches
+- task launches, including expanded argv
 - reaped child statuses
 
 When run under `systemd`, stderr is typically captured into `journald`.
+
+`--check` mode runs config loading, semantic validation, and derived watch-plan
+building, then exits before opening inotify watches.
 
 ## Current limitations
 
@@ -322,8 +325,8 @@ control knobs where users actually feel pain.
 
 Near-term work should make current behavior easier to trust:
 
-- add a dry-run or validate-only mode
-- log expanded argv before task launch
+- keep `--check` useful for service preflight and CI
+- keep expanded argv launch logs precise and readable
 - include watch descriptor, rule name, task name, and event mask in debug logs
 - document deliberate `/bin/sh -c` usage for users who need shell features
 - add example `systemd` service units

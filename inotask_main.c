@@ -138,6 +138,52 @@ static void print_rule_line(const it_rule *rule)
            rule->name.s, rule->watch_path.s, events, filters, run);
 }
 
+static void print_config_summary(const it_config *cfg,
+                                 const it_runtime_plan *plan)
+{
+    size_t item_index;
+    printf("Config loaded successfully.\nWatches: %zu  Tasks: %zu  Rules: %zu\n",
+           cfg->watches.n, cfg->tasks.n, cfg->rules.n);
+    printf("\nWATCHES\n");
+    printf("%-20s %s\n", "PATH", "EVENTS");
+    printf("%-20s %s\n", "--------------------", "----------------------------");
+    for (item_index = 0; item_index < cfg->watches.n; item_index++) {
+        char events[64];
+        events_to_buf(cfg->watches.v[item_index].events, events, sizeof(events));
+        printf("%-20s %s\n", cfg->watches.v[item_index].path.s, events);
+    }
+    printf("\nTASKS\n");
+    printf("%-16s %-24s %s\n", "NAME", "EXEC", "ARGS");
+    printf("%-16s %-24s %s\n", "----------------",
+           "------------------------", "------------------------------");
+    for (item_index = 0; item_index < cfg->tasks.n; item_index++) {
+        char args_buf[256];
+        str_vec_to_buf(&cfg->tasks.v[item_index].args, args_buf, sizeof(args_buf));
+        printf("%-16s %-24s %s\n",
+               cfg->tasks.v[item_index].name.s,
+               cfg->tasks.v[item_index].exec.s,
+               args_buf);
+    }
+    printf("\nRULES\n");
+    printf("%-16s %-20s %-22s %-28s %s\n",
+           "NAME", "WATCH", "EVENTS", "FILTERS", "RUN");
+    printf("%-16s %-20s %-22s %-28s %s\n", "----------------", "--------------------",
+           "----------------------", "----------------------------",
+           "------------------------------");
+    for (item_index = 0; item_index < cfg->rules.n; item_index++)
+        print_rule_line(&cfg->rules.v[item_index]);
+    printf("\nRUNTIME WATCH TARGETS\n");
+    printf("%-20s %-10s %s\n", "PATH", "WATCH_IDX", "NOTE");
+    printf("%-20s %-10s %s\n", "--------------------", "----------",
+           "------------------------------");
+    for (item_index = 0; item_index < plan->targets.n; item_index++) {
+        printf("%-20s %-10zu %s\n",
+               plan->targets.v[item_index].path.s,
+               plan->targets.v[item_index].spec_index,
+               "base path watch");
+    }
+}
+
 static bool str_eq_cstr(const it_str *s, const char *cstr)
 {
     size_t n;
@@ -328,6 +374,63 @@ static void free_exec_argv(const it_task *task, char **argv)
     free(argv);
 }
 
+static bool append_quoted_arg(char **buf, size_t *len, size_t *cap,
+                              const char *arg)
+{
+    size_t char_index;
+    if (!append_bytes(buf, len, cap, "\"", 1)) return false;
+    for (char_index = 0; arg[char_index] != '\0'; char_index++) {
+        const char ch = arg[char_index];
+        if (ch == '\\' || ch == '"') {
+            char escaped[2];
+            escaped[0] = '\\';
+            escaped[1] = ch;
+            if (!append_bytes(buf, len, cap, escaped, sizeof(escaped)))
+                return false;
+            continue;
+        }
+        if (ch == '\n') {
+            if (!append_bytes(buf, len, cap, "\\n", 2)) return false;
+            continue;
+        }
+        if (ch == '\r') {
+            if (!append_bytes(buf, len, cap, "\\r", 2)) return false;
+            continue;
+        }
+        if (ch == '\t') {
+            if (!append_bytes(buf, len, cap, "\\t", 2)) return false;
+            continue;
+        }
+        if (!append_bytes(buf, len, cap, &ch, 1)) return false;
+    }
+    return append_bytes(buf, len, cap, "\"", 1);
+}
+
+static char *format_exec_argv(char *const *argv)
+{
+    char *out = NULL;
+    size_t len = 0;
+    size_t cap = 0;
+    size_t arg_index;
+    if (!append_bytes(&out, &len, &cap, "[", 1)) return NULL;
+    for (arg_index = 0; argv[arg_index] != NULL; arg_index++) {
+        if (arg_index != 0 &&
+            !append_bytes(&out, &len, &cap, ", ", 2)) {
+            free(out);
+            return NULL;
+        }
+        if (!append_quoted_arg(&out, &len, &cap, argv[arg_index])) {
+            free(out);
+            return NULL;
+        }
+    }
+    if (!append_bytes(&out, &len, &cap, "]", 1)) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
 /**
  * @brief Log how an asynchronously launched child process finished.
  *
@@ -402,16 +505,32 @@ static bool install_sigchld_handler(void)
  * Tasks always run asynchronously so the event loop can keep processing new
  * filesystem activity without blocking on child completion.
  *
+ * @param rule Rule that matched and requested the task.
  * @param task Task definition to execute.
+ * @param vars Event values used to expand task argument templates.
  */
-static void launch_task(const it_task *task, const it_event_vars *vars)
+static void launch_task(const it_rule *rule, const it_task *task,
+                        const it_event_vars *vars)
 {
     pid_t pid;
     char **argv;
+    char *argv_display;
     argv = build_exec_argv(task, vars);
     if (!argv) {
         it_log_error("cannot allocate argv for task %s", task->name.s);
         return;
+    }
+    argv_display = format_exec_argv(argv);
+    if (argv_display) {
+        it_log_info("launch rule=%s task=%s event=%s path=%s argv=%s",
+                    rule->name.s, task->name.s, vars->event_name,
+                    vars->full_path, argv_display);
+        free(argv_display);
+    } else {
+        it_log_warn("cannot allocate argv display for task %s", task->name.s);
+        it_log_info("launch rule=%s task=%s event=%s path=%s",
+                    rule->name.s, task->name.s, vars->event_name,
+                    vars->full_path);
     }
     pid = fork();
     if (pid < 0) {
@@ -425,7 +544,8 @@ static void launch_task(const it_task *task, const it_event_vars *vars)
                      task->name.s, task->exec.s, strerror(errno));
         _exit(127);
     }
-    it_log_info("launched task %s pid=%ld", task->name.s, (long)pid);
+    it_log_info("launched rule=%s task=%s pid=%ld",
+                rule->name.s, task->name.s, (long)pid);
     free_exec_argv(task, argv);
 }
 
@@ -482,13 +602,16 @@ static void dispatch_event(const it_config *cfg, const it_watch_target *target,
         for (j = 0; j < rule->run.n; j++) {
             const it_task *task = find_task(cfg, &rule->run.v[j]);
             if (!task) continue;
-            it_log_info("task %s -> %s",
-                        task->name.s, task->exec.s);
-            launch_task(task, &vars);
+            launch_task(rule, task, &vars);
         }
     }
     if (!any) it_log_info("no rule matched");
     free(full_path);
+}
+
+static void print_usage(const char *program)
+{
+    (void)fprintf(stderr, "usage: %s [--check] <config-file>\n", program);
 }
 
 int main(int argc, char **argv)
@@ -496,12 +619,20 @@ int main(int argc, char **argv)
     it_config cfg;
     it_runtime_plan plan;
     it_runtime_session session;
-    size_t i;
-    char buf[4096]
-    ;
+    const char *config_path;
+    bool check_only = false;
+    char buf[4096];
     it_log_set_level(IT_LOG_INFO);
-    if (argc != 2) { it_log_error("usage: %s <config-file>", argv[0]); return 2; }
-    if (!it_load_config_file(argv[1], &cfg)) return 1;
+    if (argc == 2) {
+        config_path = argv[1];
+    } else if (argc == 3 && strcmp(argv[1], "--check") == 0) {
+        check_only = true;
+        config_path = argv[2];
+    } else {
+        print_usage(argv[0]);
+        return 2;
+    }
+    if (!it_load_config_file(config_path, &cfg)) return 1;
     it_runtime_plan_init(&plan);
     it_runtime_session_init(&session);
     if (!it_runtime_plan_build(&cfg, &plan)) {
@@ -509,44 +640,12 @@ int main(int argc, char **argv)
         it_config_free(&cfg);
         return 1;
     }
-    printf("Config loaded successfully.\nWatches: %zu  Tasks: %zu  Rules: %zu\n",
-           cfg.watches.n, cfg.tasks.n, cfg.rules.n);
-    printf("\nWATCHES\n");
-    printf("%-20s %s\n", "PATH", "EVENTS");
-    printf("%-20s %s\n", "--------------------", "----------------------------");
-    for (i = 0; i < cfg.watches.n; i++) {
-        char events[64];
-        events_to_buf(cfg.watches.v[i].events, events, sizeof(events));
-        printf("%-20s %s\n", cfg.watches.v[i].path.s, events);
-    }
-    printf("\nTASKS\n");
-    printf("%-16s %-24s %s\n", "NAME", "EXEC", "ARGS");
-    printf("%-16s %-24s %s\n", "----------------",
-           "------------------------", "------------------------------");
-    for (i = 0; i < cfg.tasks.n; i++) {
-        char args_buf[256];
-        str_vec_to_buf(&cfg.tasks.v[i].args, args_buf, sizeof(args_buf));
-        printf("%-16s %-24s %s\n",
-               cfg.tasks.v[i].name.s,
-               cfg.tasks.v[i].exec.s,
-               args_buf);
-    }
-    printf("\nRULES\n");
-    printf("%-16s %-20s %-22s %-28s %s\n",
-           "NAME", "WATCH", "EVENTS", "FILTERS", "RUN");
-    printf("%-16s %-20s %-22s %-28s %s\n", "----------------", "--------------------",
-           "----------------------", "----------------------------",
-           "------------------------------");
-    for (i = 0; i < cfg.rules.n; i++) print_rule_line(&cfg.rules.v[i]);
-    printf("\nRUNTIME WATCH TARGETS\n");
-    printf("%-20s %-10s %s\n", "PATH", "WATCH_IDX", "NOTE");
-    printf("%-20s %-10s %s\n", "--------------------", "----------",
-           "------------------------------");
-    for (i = 0; i < plan.targets.n; i++) {
-        printf("%-20s %-10zu %s\n",
-               plan.targets.v[i].path.s,
-               plan.targets.v[i].spec_index,
-               "base path watch");
+    print_config_summary(&cfg, &plan);
+    if (check_only) {
+        printf("\nConfig check passed; runtime watches were not opened.\n");
+        it_runtime_plan_free(&plan);
+        it_config_free(&cfg);
+        return 0;
     }
     if (!it_runtime_session_open(&cfg, &plan, &session)) {
         it_log_error("cannot open inotify watches");

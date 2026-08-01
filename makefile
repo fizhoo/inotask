@@ -22,6 +22,9 @@ clean:
 run: inotask
 	./inotask $(CFG)
 
+check: inotask
+	./inotask --check $(CFG)
+
 live: inotask
 	while :; do \
 		clear; \
@@ -34,6 +37,6 @@ live: inotask
 edit:
 	nano $(CFG)
 
-.PHONY: all clean run live edit
+.PHONY: all clean run check live edit
 
 -include $(OBJ:.o=.d)
