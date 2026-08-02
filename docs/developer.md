@@ -156,6 +156,7 @@ It currently owns the live daemon behavior:
 
 - startup summary printing
 - `SIGCHLD` handling and child reaping
+- `SIGINT` / `SIGTERM` handling for graceful shutdown
 - `poll()` on the `inotify` fd with settled-event timeouts
 - per-event rule matching
 - include/exclude filename filtering with `fnmatch()`
@@ -210,6 +211,10 @@ At runtime, the event loop does this:
 8. log the event summary
 9. scan configured rules for matches
 10. either launch matching tasks immediately or update a settle timer
+
+If `SIGINT` or `SIGTERM` arrives, the signal handler sets a stop flag. The
+event loop exits after `poll()` or `read()` is interrupted, then normal cleanup
+runs before `main()` returns.
 
 ### Rule matching flow
 
@@ -295,6 +300,20 @@ Current model:
 - exit/signal status is logged
 
 This prevents zombie accumulation in a long-running daemon.
+
+### Shutdown flow
+
+`SIGINT` and `SIGTERM` are handled separately from `SIGCHLD`.
+
+Current model:
+
+- the stop signal handler sets a global stop flag
+- the blocking `poll()` call returns with `EINTR`
+- the event loop exits
+- pending settled events, runtime watches, runtime plan, and config memory are
+  freed through the normal cleanup path
+
+The handler itself does not log or allocate memory.
 
 ## Memory ownership notes
 

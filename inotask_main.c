@@ -26,11 +26,18 @@
 #include <string.h>
 
 static volatile sig_atomic_t g_reap_requested = 0;
+static volatile sig_atomic_t g_stop_requested = 0;
 
 static void on_sigchld(int signo)
 {
     (void)signo;
     g_reap_requested = 1;
+}
+
+static void on_stop(int signo)
+{
+    (void)signo;
+    g_stop_requested = 1;
 }
 
 /**
@@ -616,20 +623,27 @@ static void reap_children(void)
     }
 }
 
-/**
- * @brief Install the SIGCHLD handler used to trigger async child reaping.
- *
- * @return true if the handler was installed successfully.
- * @return false on failure.
- */
-static bool install_sigchld_handler(void)
+static bool install_signal_handler(int signo, void (*handler)(int))
 {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = on_sigchld;
+    sa.sa_handler = handler;
     if (sigemptyset(&sa.sa_mask) != 0) return false;
     sa.sa_flags = 0;
-    return sigaction(SIGCHLD, &sa, NULL) == 0;
+    return sigaction(signo, &sa, NULL) == 0;
+}
+
+/**
+ * @brief Install signal handlers used for child reaping and graceful shutdown.
+ *
+ * @return true if all handlers were installed successfully.
+ * @return false on failure.
+ */
+static bool install_signal_handlers(void)
+{
+    return install_signal_handler(SIGCHLD, on_sigchld) &&
+           install_signal_handler(SIGINT, on_stop) &&
+           install_signal_handler(SIGTERM, on_stop);
 }
 
 /**
@@ -864,8 +878,8 @@ int main(int argc, char **argv)
         it_config_free(&cfg);
         return 1;
     }
-    if (!install_sigchld_handler()) {
-        it_log_error("cannot install SIGCHLD handler: %s", strerror(errno));
+    if (!install_signal_handlers()) {
+        it_log_error("cannot install signal handlers: %s", strerror(errno));
         pending_event_vec_free(&pending);
         it_runtime_session_free(&session);
         it_runtime_plan_free(&plan);
@@ -873,7 +887,7 @@ int main(int argc, char **argv)
         return 1;
     }
     it_log_info("watching for filesystem events; press Ctrl-C to stop");
-    for (;;) {
+    while (!g_stop_requested) {
         struct pollfd watch_poll;
         int poll_timeout;
         int poll_result;
@@ -889,6 +903,7 @@ int main(int argc, char **argv)
         if (poll_result < 0) {
             if (errno == EINTR) {
                 if (g_reap_requested) reap_children();
+                if (g_stop_requested) break;
                 continue;
             }
             it_log_error("poll failed: %s", strerror(errno));
@@ -904,6 +919,7 @@ int main(int argc, char **argv)
             if (nread < 0) {
                 if (errno == EINTR) {
                     if (g_reap_requested) reap_children();
+                    if (g_stop_requested) break;
                     continue;
                 }
                 it_log_error("inotify read failed: %s", strerror(errno));
@@ -943,6 +959,7 @@ int main(int argc, char **argv)
         }
         if (g_reap_requested) reap_children();
     }
+    if (g_stop_requested) it_log_info("shutdown requested; exiting event loop");
     reap_children();
     pending_event_vec_free(&pending);
     it_runtime_session_free(&session);

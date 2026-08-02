@@ -28,6 +28,7 @@ The current design is intentionally simple:
 - startup validation of executable paths
 - `CLOSE_WRITE` support for ingestion-style workflows
 - async child launching with zombie reaping
+- graceful `SIGINT` / `SIGTERM` shutdown
 - `--check` mode for parse/validate without opening watches
 - launch logs include the expanded `execv()` argument vector
 
@@ -176,6 +177,7 @@ At runtime:
 - optional filename filters are applied at the rule level
 - rules with `settle_ms` wait until each matching full path is quiet
 - each matching task is launched with `execv()`
+- `SIGINT` or `SIGTERM` exits the event loop and runs cleanup
 
 See `docs/design.md` for the architecture and design notes.
 
@@ -190,6 +192,7 @@ Examples:
 - rule matches
 - task launches with expanded argv
 - child reap status
+- graceful shutdown requests
 
 When run under `systemd`, stderr is typically captured by `journald`.
 

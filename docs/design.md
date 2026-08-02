@@ -144,6 +144,16 @@ Current behavior:
 This keeps the event loop responsive while still handling child lifecycle
 correctly.
 
+## Graceful shutdown
+
+`SIGINT` and `SIGTERM` set a stop flag rather than terminating the process
+immediately. The event loop wakes from `poll()`, exits normally, reaps any
+already-exited children, and frees owned runtime/configuration memory.
+
+This keeps Ctrl-C and service-manager shutdown paths predictable, and it makes
+runtime analysis tools such as Valgrind report normal cleanup instead of a
+signal-killed process.
+
 ## Current event-processing policy
 
 Current policy is intentionally simple:
@@ -179,6 +189,7 @@ Logged events currently include:
 - event matches
 - task launches, including expanded argv
 - reaped child statuses
+- shutdown requests
 
 When run under `systemd`, stderr is typically captured into `journald`.
 
