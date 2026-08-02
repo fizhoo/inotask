@@ -12,7 +12,7 @@ The current design is intentionally simple:
 
 - rules are declared in a config file
 - watches are derived from those rules
-- one matching event launches one new task process
+- matching events either launch immediately or update a per-path settle timer
 - tasks run asynchronously
 - exited child processes are reaped to avoid zombies
 - task arguments can include runtime event placeholders
@@ -34,7 +34,8 @@ The current design is intentionally simple:
 ## Current status
 
 `inotask` is usable today for per-file event handling, especially when you want
-one event hit to trigger one new process launch.
+explicit filesystem events to trigger task launches with predictable argument
+expansion.
 
 Current supported event names:
 
@@ -143,7 +144,8 @@ For ingestion based on `CLOSE_WRITE`, a settle window is usually unnecessary.
 A config file defines:
 
 - `task` blocks: named executables plus argument templates
-- `rule` blocks: watched path, event list, optional `include` / `exclude` filters, and task names to run
+- `rule` blocks: watched path, event list, optional `include` / `exclude`
+  filters, optional `settle_ms`, and task names to run
 
 At startup, task executables are validated before the runtime begins. Today that includes checking that each `exec` path is absolute, exists, is a regular file, and is executable.
 
@@ -198,7 +200,7 @@ Notable current limitations:
 
 - Linux-only (`inotify`)
 - no recursive watch walking
-- one matching event launches one new child process immediately
+- immediate rules launch one new child process per matching task
 - no per-file queueing or throttling yet
 - `settle_ms` coalesces repeated events for the same rule and full path
 - no shell command strings; tasks use `execv()` with explicit args
