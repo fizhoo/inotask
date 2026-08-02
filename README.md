@@ -92,6 +92,8 @@ Helper make targets:
 ```sh
 make check
 make run
+make scan
+make san
 make live
 make edit
 ```
