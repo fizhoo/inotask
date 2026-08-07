@@ -29,6 +29,7 @@ The current design is intentionally simple:
 - `CLOSE_WRITE` support for ingestion-style workflows
 - async child launching with zombie reaping
 - graceful `SIGINT` / `SIGTERM` shutdown
+- inotify queue overflow detection
 - `--check` mode for parse/validate without opening watches
 - launch logs include the expanded `execv()` argument vector
 
@@ -193,6 +194,7 @@ Examples:
 - task launches with expanded argv
 - child reap status
 - graceful shutdown requests
+- inotify queue overflow errors
 
 When run under `systemd`, stderr is typically captured by `journald`.
 
@@ -205,6 +207,8 @@ Notable current limitations:
 
 - Linux-only (`inotify`)
 - no recursive watch walking
+- kernel inotify queue overflow means events may already have been lost before
+  `inotask` can process them
 - immediate rules launch one new child process per matching task
 - no per-file queueing or throttling yet
 - `settle_ms` coalesces repeated events for the same rule and full path

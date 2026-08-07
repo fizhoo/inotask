@@ -190,6 +190,7 @@ Logged events currently include:
 - task launches, including expanded argv
 - reaped child statuses
 - shutdown requests
+- inotify queue overflow errors
 
 When run under `systemd`, stderr is typically captured into `journald`.
 
@@ -202,6 +203,8 @@ Important limitations in the current design:
 
 - Linux-only
 - no recursive watch walking
+- inotify queue overflow is detected and logged, but lost events cannot be
+  reconstructed
 - no advanced queueing policy yet
 - no per-file dedupe or bounded worker pool yet
 - no full raw-inotify event surface yet

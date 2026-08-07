@@ -206,15 +206,21 @@ At runtime, the event loop does this:
 3. compute the next settle timeout, if any
 4. `poll()` the single `inotify` fd with that timeout
 5. receive one or more raw `struct inotify_event` records
-6. map each event `wd` back to a watched path target
-7. convert the Linux mask to the internal `it_event_mask`
-8. log the event summary
-9. scan configured rules for matches
-10. either launch matching tasks immediately or update a settle timer
+6. log and skip `IN_Q_OVERFLOW` records before watch-descriptor lookup
+7. map each event `wd` back to a watched path target
+8. convert the Linux mask to the internal `it_event_mask`
+9. log the event summary
+10. scan configured rules for matches
+11. either launch matching tasks immediately or update a settle timer
 
 If `SIGINT` or `SIGTERM` arrives, the signal handler sets a stop flag. The
 event loop exits after `poll()` or `read()` is interrupted, then normal cleanup
 runs before `main()` returns.
+
+Overflow detail:
+`IN_Q_OVERFLOW` events report kernel queue overflow and use `wd = -1`, so they
+must be handled before watch-descriptor mapping. `inotask` logs an error and
+continues running because the kernel cannot tell us which events were lost.
 
 ### Rule matching flow
 
@@ -362,6 +368,7 @@ These are important for any contributor to understand:
 
 - Linux-only via `inotify`
 - no recursive watch walking
+- queue overflow recovery beyond logging is not implemented
 - no queueing or flood control yet
 - no worker pool or concurrency limit yet
 - one matching event can launch one new child immediately

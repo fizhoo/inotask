@@ -940,6 +940,11 @@ int main(int argc, char **argv)
                     it_log_warn("truncated inotify event record; stopping event parsing");
                     break;
                 }
+                if ((ev->mask & IN_Q_OVERFLOW) != 0) {
+                    it_log_error("inotify queue overflow; filesystem events may have been lost");
+                    off += ev_size;
+                    continue;
+                }
                 target = it_runtime_session_target_for_wd(&plan, &session, ev->wd);
                 if (!target) {
                     off += ev_size;
