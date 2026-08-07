@@ -843,6 +843,7 @@ int main(int argc, char **argv)
     bool check_only = false;
     char buf[4096];
     it_log_set_level(IT_LOG_INFO);
+    if (!it_log_configure_from_env()) return 2;
     if (argc == 2) {
         config_path = argv[1];
     } else if (argc == 3 && strcmp(argv[1], "--check") == 0) {

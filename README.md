@@ -187,6 +187,13 @@ See `docs/design.md` for the architecture and design notes.
 `inotask` writes summary tables to standard output and diagnostic/runtime logs
 to standard error.
 
+Logging can be configured through the environment:
+
+- `INOTASK_LOG_LEVEL=error|warn|info|debug` sets the emitted verbosity
+
+The default level is `info`. Every emitted message uses a readable severity
+prefix and is written to standard error.
+
 Examples:
 
 - config load failures
@@ -196,7 +203,9 @@ Examples:
 - graceful shutdown requests
 - inotify queue overflow errors
 
-When run under `systemd`, stderr is typically captured by `journald`.
+When run under `systemd`, stdout and stderr are captured by `journald`; no
+special logging mode is required. See `docs/systemd.md` for installation,
+overrides, and journal commands.
 
 ## Current limitations
 
@@ -219,3 +228,4 @@ Notable current limitations:
 - `docs/config.md` — config format, events, filters, placeholders, examples
 - `docs/design.md` — architecture, runtime behavior, and design choices
 - `docs/developer.md` — code tour, control flow, ownership, and extension notes
+- `docs/systemd.md` — system service installation and logging

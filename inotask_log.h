@@ -7,6 +7,7 @@
 #ifndef INOTASK_LOG_H
 #define INOTASK_LOG_H
 
+#include <stdbool.h>
 #include <stdarg.h>
 
 /**
@@ -27,6 +28,15 @@ typedef enum it_log_level {
  * @param level Minimum level to emit.
  */
 void it_log_set_level(it_log_level level);
+
+/**
+ * @brief Configure logging from the process environment.
+ *
+ * `INOTASK_LOG_LEVEL` accepts `error`, `warn`, `info`, or `debug`.
+ *
+ * @return true when all configured values are valid.
+ */
+bool it_log_configure_from_env(void);
 
 /**
  * @brief Write a formatted log message to stderr.

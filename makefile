@@ -3,6 +3,12 @@ CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -fanalyzer
 DEPFLAGS = -MMD -MP
 LDFLAGS =
 CFG ?= inotaskd.cfg
+DESTDIR ?=
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+SYSCONFDIR ?= /etc
+CONFIGDIR ?= $(SYSCONFDIR)/inotask
+SYSTEMD_UNIT_DIR ?= $(SYSCONFDIR)/systemd/system
 LIVE_DELAY ?= 1
 SCAN_BUILD ?= scan-build-19
 SCAN_CC ?= clang-19
@@ -53,6 +59,16 @@ live: inotask
 edit:
 	nano $(CFG)
 
-.PHONY: all clean run check scan san live edit
+install: inotask
+	install -D -m 0755 inotask $(DESTDIR)$(BINDIR)/inotask
+
+install-config:
+	install -D -m 0644 $(CFG) $(DESTDIR)$(CONFIGDIR)/inotaskd.cfg
+
+install-systemd:
+	install -D -m 0644 contrib/systemd/inotask.service \
+		$(DESTDIR)$(SYSTEMD_UNIT_DIR)/inotask.service
+
+.PHONY: all clean run check scan san live edit install install-config install-systemd
 
 -include $(DEP)

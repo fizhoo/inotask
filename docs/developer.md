@@ -383,5 +383,5 @@ If we keep building from today’s foundation, the most natural next layers are:
 - bounded concurrency / worker limits
 - optional event coalescing modes
 - config live-reload with parse-validate-swap
-- systemd service examples and hardening guidance
+- optional systemd sandboxing guidance for known deployment profiles
 - optional per-task user/group execution controls
