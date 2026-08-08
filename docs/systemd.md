@@ -76,6 +76,11 @@ Those same stderr lines appear in `journalctl -u inotask.service`. The textual
 prefix remains part of the message; the unit does not add structured journal
 priority metadata.
 
+At `debug`, the journal also includes installed watch descriptors, raw inotify
+masks and cookies, normalized event paths, rule matching decisions, and
+settle-timer updates. Fatal event-loop failures return nonzero, allowing the
+unit's `Restart=on-failure` policy to restart the daemon.
+
 ## Paths and permissions
 
 The service runs as `root` by default because watched paths and task permission

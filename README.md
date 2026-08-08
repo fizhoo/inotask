@@ -194,6 +194,14 @@ Logging can be configured through the environment:
 The default level is `info`. Every emitted message uses a readable severity
 prefix and is written to standard error.
 
+Levels are cumulative:
+
+- `error` reports failures
+- `warn` also reports recoverable or suspicious conditions
+- `info` also reports service lifecycle, task launches, and child exits
+- `debug` also reports watch bindings, raw inotify records, normalized events,
+  rule matches, unmatched events, and settle-timer updates
+
 Examples:
 
 - config load failures
@@ -202,6 +210,10 @@ Examples:
 - child reap status
 - graceful shutdown requests
 - inotify queue overflow errors
+
+Fatal event-loop failures such as `poll()` or inotify read errors return a
+nonzero process status. Recoverable errors, including queue overflow and
+individual task launch failures, are logged while the daemon continues.
 
 When run under `systemd`, stdout and stderr are captured by `journald`; no
 special logging mode is required. See `docs/systemd.md` for installation,

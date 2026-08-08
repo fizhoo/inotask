@@ -5,6 +5,7 @@
  */
 
 #include "inotask_runtime.h"
+#include "inotask_log.h"
 
 #include <sys/inotify.h>
 #include <unistd.h>
@@ -217,6 +218,8 @@ bool it_runtime_session_open(const it_config *cfg, const it_runtime_plan *plan,
             it_runtime_session_free(session);
             return false;
         }
+        it_log_debug("watch added wd=%d path=%s mask=0x%x",
+                     wd, target->path.s, (unsigned)mask);
     }
     return true;
 }

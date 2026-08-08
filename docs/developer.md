@@ -148,6 +148,10 @@ It provides severity-based logging:
 Runtime code uses this instead of sprinkling raw `fprintf(stderr, ...)`
 through the project.
 
+`INFO` is reserved for service and task lifecycle messages. `DEBUG` carries
+per-watch and per-event internals such as watch descriptors, raw masks, rule
+matching, and settle-timer updates.
+
 ### `inotask_main.c`
 
 This is the top-level runtime driver.
@@ -215,7 +219,8 @@ At runtime, the event loop does this:
 
 If `SIGINT` or `SIGTERM` arrives, the signal handler sets a stop flag. The
 event loop exits after `poll()` or `read()` is interrupted, then normal cleanup
-runs before `main()` returns.
+runs before `main()` returns zero. Fatal polling, inotify read, stream closure,
+or descriptor failures use the same cleanup path but return nonzero.
 
 Overflow detail:
 `IN_Q_OVERFLOW` events report kernel queue overflow and use `wd = -1`, so they

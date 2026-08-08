@@ -785,9 +785,9 @@ static void dispatch_event(const it_config *cfg, const it_watch_target *target,
     vars.entry_name = (name && *name) ? name : "";
     vars.full_path = full_path;
     vars.event_name = events;
-    if (name && *name) it_log_info("event path=%s entry=%s events=%s",
-                                   target->path.s, name, events);
-    else it_log_info("event path=%s events=%s", target->path.s, events);
+    if (name && *name) it_log_debug("event path=%s entry=%s events=%s",
+                                    target->path.s, name, events);
+    else it_log_debug("event path=%s events=%s", target->path.s, events);
     for (rule_index = 0; rule_index < cfg->rules.n; rule_index++) {
         const it_rule *rule = &cfg->rules.v[rule_index];
         const it_event_mask matched_events = rule->events & mask;
@@ -795,14 +795,14 @@ static void dispatch_event(const it_config *cfg, const it_watch_target *target,
         if (matched_events == 0) continue;
         if (!rule_name_filter_matches(rule, vars.entry_name)) continue;
         any = true;
-        it_log_info("rule %s matched", rule->name.s);
+        it_log_debug("rule %s matched", rule->name.s);
         if (rule->settle_ms != IT_RULE_SETTLE_MS_DEFAULT) {
             if (settle_event(pending, rule_index, matched_events,
                              vars.entry_name, vars.full_path,
                              rule->settle_ms)) {
-                it_log_info("settling rule=%s path=%s quiet_ms=%u",
-                            rule->name.s, vars.full_path,
-                            (unsigned)rule->settle_ms);
+                it_log_debug("settling rule=%s path=%s quiet_ms=%u",
+                             rule->name.s, vars.full_path,
+                             (unsigned)rule->settle_ms);
             } else {
                 it_log_error("cannot allocate settled event for rule=%s path=%s",
                              rule->name.s, vars.full_path);
@@ -811,7 +811,7 @@ static void dispatch_event(const it_config *cfg, const it_watch_target *target,
             launch_rule_tasks(cfg, rule, &vars);
         }
     }
-    if (!any) it_log_info("no rule matched");
+    if (!any) it_log_debug("no rule matched");
     free(full_path);
 }
 
@@ -841,6 +841,7 @@ int main(int argc, char **argv)
     it_pending_event_vec pending;
     const char *config_path;
     bool check_only = false;
+    int exit_status = 0;
     char buf[4096];
     it_log_set_level(IT_LOG_INFO);
     if (!it_log_configure_from_env()) return 2;
@@ -908,6 +909,7 @@ int main(int argc, char **argv)
                 continue;
             }
             it_log_error("poll failed: %s", strerror(errno));
+            exit_status = 1;
             break;
         }
         if (poll_result == 0) {
@@ -924,10 +926,12 @@ int main(int argc, char **argv)
                     continue;
                 }
                 it_log_error("inotify read failed: %s", strerror(errno));
+                exit_status = 1;
                 break;
             }
             if (nread == 0) {
-                it_log_warn("inotify stream closed");
+                it_log_error("inotify stream closed");
+                exit_status = 1;
                 break;
             }
             while (off + sizeof(struct inotify_event) <= (size_t)nread) {
@@ -946,8 +950,12 @@ int main(int argc, char **argv)
                     off += ev_size;
                     continue;
                 }
+                it_log_debug("inotify wd=%d mask=0x%x cookie=%u name=%s",
+                             ev->wd, (unsigned)ev->mask, ev->cookie,
+                             ev->len && ev->name[0] ? ev->name : "");
                 target = it_runtime_session_target_for_wd(&plan, &session, ev->wd);
                 if (!target) {
+                    it_log_debug("no runtime target for inotify wd=%d", ev->wd);
                     off += ev_size;
                     continue;
                 }
@@ -961,6 +969,7 @@ int main(int argc, char **argv)
         if ((watch_poll.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
             it_log_error("inotify poll reported revents=0x%x",
                          watch_poll.revents);
+            exit_status = 1;
             break;
         }
         if (g_reap_requested) reap_children();
@@ -971,5 +980,5 @@ int main(int argc, char **argv)
     it_runtime_session_free(&session);
     it_runtime_plan_free(&plan);
     it_config_free(&cfg);
-    return 0;
+    return exit_status;
 }

@@ -192,10 +192,18 @@ Logged events currently include:
 - shutdown requests
 - inotify queue overflow errors
 
+At the default `info` level, logs focus on service and task lifecycle. The
+`debug` level adds watch descriptor bindings, raw inotify masks and cookies,
+normalized event paths, rule matching decisions, and settle-timer updates.
+
 When run under `systemd`, stderr is typically captured into `journald`.
 
 `--check` mode runs config loading, semantic validation, and derived watch-plan
 building, then exits before opening inotify watches.
+
+Fatal `poll()`, inotify read, stream closure, and descriptor errors terminate
+the event loop with a nonzero status. Queue overflow remains recoverable: it is
+logged as an error and event processing continues.
 
 ## Current limitations
 
