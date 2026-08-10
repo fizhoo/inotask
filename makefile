@@ -1,5 +1,5 @@
 CC = cc
-CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -fanalyzer
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -fanalyzer -g
 DEPFLAGS = -MMD -MP
 LDFLAGS =
 CFG ?= inotaskd.cfg
