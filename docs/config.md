@@ -1,344 +1,215 @@
-# Configuration Guide
+# Configuration Reference
 
-`inotask` uses a small block-based configuration format with two top-level
-constructs:
-
-- `task`
-- `rule`
-
-## Overview
-
-A `task` defines what executable to run and which arguments to pass.
-A `rule` defines which path and events trigger one or more tasks.
-
-## Task blocks
-
-A task has:
-
-- a name
-- an absolute executable path
-- an `args` list
-
-Example:
+An `inotask` configuration contains named `task` and `rule` blocks. A task
+defines a process to launch. A rule defines the filesystem events that launch
+one or more tasks.
 
 ```cfg
-task ingest_tmp_file {
+task announce {
     exec = "/usr/bin/echo"
-    args = [ "TMP_READY", "{full_path}", "{entry_name}", "{event}" ]
+    args = [ "changed", "{full_path}", "{event}" ]
+}
+
+rule documents {
+    watch = "/srv/documents"
+    events = [ CLOSE_WRITE ]
+    include = [ "*.txt", "*.md" ]
+    exclude = [ ".*", "*.tmp" ]
+    run = [ "announce" ]
 }
 ```
 
-### Task fields
+## Syntax
 
-#### `exec`
+- Block and field names are identifiers.
+- Paths, task references, patterns, and arguments are quoted strings.
+- Lists use square brackets and commas.
+- Trailing commas are not accepted.
+- `#` starts a comment outside a quoted string.
+- Quoted strings cannot contain escapes or span lines.
+- Unknown fields and duplicate fields are errors.
+- Block order is unrestricted; rule task references are resolved after parsing.
 
-Absolute path to the executable.
-
-At startup, `inotask` validates that the path is:
-
-- absolute
-- present on disk
-- a regular file
-- executable
-
-Example:
+## Tasks
 
 ```cfg
-exec = "/usr/bin/echo"
+task NAME {
+    exec = "/absolute/path"
+    args = [ "optional", "argument", "templates" ]
+}
 ```
 
-#### `args`
+### `exec`
 
-Optional list of argument templates appended after `exec`.
+Required absolute path to an executable. Validation requires it to exist, be a
+regular file, and be executable by the user starting `inotask`.
 
-Example:
+### `args`
 
-```cfg
-args = [ "hello", "world" ]
-```
+Optional non-empty list of argument templates. Omit `args` when the executable
+needs no additional arguments; an explicitly empty list is rejected.
 
-At runtime, `inotask` launches tasks as:
+The runtime calls `execv()` with:
 
 ```text
-[ exec, args..., NULL ]
+[ exec, expanded_args..., NULL ]
 ```
 
-There is no shell involved.
+No shell is inserted. A task can technically execute a shell, but configuration
+strings do not support escapes and event placeholders are substituted literally.
+A wrapper executable is safer for shell behavior or untrusted filenames.
 
-## Rule blocks
-
-A rule has:
-
-- a name
-- a watched absolute path
-- an event list
-- optional `include` patterns
-- optional `exclude` patterns
-- optional `settle_ms` quiet window
-- a `run` list of task names
-
-Example:
+## Rules
 
 ```cfg
-rule tmp_ready {
-    watch = "/tmp"
-    events = [ CLOSE_WRITE ]
-    run = [ "ingest_tmp_file" ]
+rule NAME {
+    watch = "/absolute/path"
+    events = [ EVENT, ... ]
+    include = [ "optional", "patterns" ]
+    exclude = [ "optional", "patterns" ]
+    settle_ms = 250
+    run = [ "task_name", ... ]
 }
 ```
 
-### Rule fields
+### `watch`
 
-#### `watch`
+Required absolute path. The path must be watchable when runtime startup opens
+the inotify session.
 
-Absolute watched path.
+Rules that use the same path are merged into one kernel watch with the union of
+their requested events. Rule matching and policy remain independent.
 
-Example:
+### `events`
 
-```cfg
-watch = "/tmp"
-```
+Required non-empty list. Supported names are:
 
-#### `events`
+| Event | Meaning |
+|---|---|
+| `CREATE` | Entry created or moved into the watched directory |
+| `MODIFY` | File content modified; often noisy during active writes |
+| `DELETE` | Entry or watched object deleted |
+| `MOVE` | Simplified move/rename activity |
+| `ATTRIB` | Metadata such as permissions or timestamps changed |
+| `CLOSE_WRITE` | File opened for writing was closed |
 
-One or more event names.
+Use `CLOSE_WRITE` for ingestion when work should start after the writer closes
+the file. Use `MODIFY` with `settle_ms` when repeated modifications should
+collapse into one launch after a quiet period.
 
-Example:
+### `run`
 
-```cfg
-events = [ CREATE, CLOSE_WRITE ]
-```
+Required non-empty list of declared task names. Each task may appear only once
+within a rule.
 
-#### `run`
+### `include`
 
-One or more task names. Each name must refer to a declared `task`.
+Optional non-empty list of `fnmatch()`-style patterns. When present, the event's
+`entry_name` must match at least one pattern.
 
-Example:
+### `exclude`
 
-```cfg
-run = [ "ingest_tmp_file", "audit_tmp_file" ]
-```
-
-#### `include`
-
-Optional glob-style filename patterns. If present, the event entry name must
-match at least one pattern.
-
-Example:
+Optional non-empty list of `fnmatch()`-style patterns. A matching exclusion
+rejects the event even when an inclusion matched.
 
 ```cfg
 include = [ "*.xml", "*.json" ]
-```
-
-#### `exclude`
-
-Optional glob-style filename patterns. If present, the event entry name must
-not match any of them.
-
-Example:
-
-```cfg
 exclude = [ "#*", ".*", "*.swp", "*.tmp" ]
 ```
 
-#### `settle_ms`
+Filters apply to `entry_name`, not the full path. A filtered rule does not match
+an event that has no entry name.
 
-Optional quiet period in milliseconds before a matching rule launches its
-tasks. If omitted, the value defaults to `0`, which means immediate dispatch.
+### `settle_ms`
 
-Settling is per rule and per matching `{full_path}`. Repeated matching events
-for the same rule and full path reset that path's timer. When the path has been
-quiet for the configured interval, `inotask` launches one job for that path.
+Optional unsigned quiet period in milliseconds. The default is `0`, which
+dispatches immediately.
 
-Example:
-
-```cfg
-settle_ms = 250
-```
-
-This is useful for noisy `MODIFY` workflows, where one logical file update may
-produce many low-level modification events.
-
-For ingestion workflows that use `CLOSE_WRITE`, a settle window is usually not
-needed because `CLOSE_WRITE` already means the writer closed the file.
-
-If a rule uses `MODIFY` with the default `settle_ms = 0`, `--check` emits a
-warning because active writes may launch repeated tasks.
-
-## Supported event names
-
-Current supported events are:
-
-- `CREATE`
-- `MODIFY`
-- `DELETE`
-- `MOVE`
-- `ATTRIB`
-- `CLOSE_WRITE`
-
-### Event notes
-
-#### `CREATE`
-Triggers when a file or directory is created inside a watched directory.
-
-#### `MODIFY`
-Triggers on file modification activity. This event can be noisy while a writer
-is actively changing a file. Use `settle_ms` when you want to process the path
-after it has been quiet instead of launching on every delivered modify event.
-
-#### `DELETE`
-Triggers when a file or directory is deleted.
-
-#### `MOVE`
-Represents move/rename activity in the current simplified event model.
-
-#### `ATTRIB`
-Triggers on metadata changes such as permissions or timestamps.
-
-#### `CLOSE_WRITE`
-Triggers when a file that was opened for writing is closed.
-This is often the best event for file ingestion pipelines.
-
-## Argument placeholders
-
-Each string in `args` may contain placeholders expanded at runtime.
-
-Think of placeholders as event variables. They let one static config line pick
-up values from the specific filesystem event that triggered the rule.
-
-Supported placeholders:
-
-- `{watch_path}`
-- `{entry_name}`
-- `{full_path}`
-- `{event}`
-
-### `{watch_path}`
-The watched path from the matching rule.
-
-### `{entry_name}`
-The filename reported by the event, relative to the watched directory.
-If no filename is present, this becomes an empty string.
-
-### `{full_path}`
-The watched path plus the entry name when one exists.
-If no entry name is present, this becomes the watched path.
-
-### `{event}`
-A display-style event string such as `CREATE` or `CLOSE_WRITE`.
-
-### Expansion example
-
-Config:
+For a nonzero value, pending work is keyed by rule and `full_path`. Every new
+matching event updates the stored event mask and resets that path's deadline.
+The rule runs once after the path remains quiet for the configured interval.
 
 ```cfg
-args = [ "READY", "{full_path}", "{event}" ]
+rule source_changed {
+    watch = "/srv/source"
+    events = [ MODIFY ]
+    include = [ "*.c", "*.h" ]
+    settle_ms = 250
+    run = [ "rebuild" ]
+}
 ```
 
-Possible runtime argv tail:
+`--check` warns when a rule watches `MODIFY` with `settle_ms = 0` because active
+writes may launch repeated tasks.
 
-```text
-READY /tmp/report.txt CLOSE_WRITE
-```
+## Argument Placeholders
 
-## Filename filtering
+Each task argument may contain zero or more placeholders:
 
-Rules may optionally filter events by `entry_name` using glob-style patterns.
+| Placeholder | Value |
+|---|---|
+| `{watch_path}` | Configured watch path from the matching rule |
+| `{entry_name}` | Name reported relative to the watched directory, or empty |
+| `{full_path}` | Watch path joined with the entry name, or the watch path itself |
+| `{event}` | Normalized event names such as `CREATE` or `CLOSE_WRITE` |
 
-Matching rules:
-
-- if `include` is absent, the include check passes automatically
-- if `include` is present, `entry_name` must match at least one pattern
-- if `exclude` is present, `entry_name` must match none of the patterns
-- if filters are present and the event has no entry name, the rule does not
-  match
-
-Examples:
-
-- `*.xml`
-- `*.json`
-- `#*`
-- `.*`
-- `*.tmp`
-
-This is useful for ignoring editor temp files, dotfiles, swap files, or other
-unrelated noise in a watched directory.
-
-## Example configs
-
-### Ingest file after close
+Placeholders may be embedded within other text:
 
 ```cfg
-task ingest_tmp_file {
-    exec = "/usr/bin/echo"
-    args = [ "TMP_READY", "{full_path}", "{entry_name}", "{event}" ]
-}
-
-rule tmp_ready {
-    watch = "/tmp"
-    events = [ CLOSE_WRITE ]
-    exclude = [ "#*", ".*", "*.swp", "*.tmp" ]
-    run = [ "ingest_tmp_file" ]
-}
+args = [ "path={full_path}", "event={event}" ]
 ```
 
-### Separate create and close-write handling
+Unknown placeholder names are left unchanged. Expansion produces literal argv
+strings; no shell quoting or evaluation occurs.
 
-```cfg
-task tmp_created {
-    exec = "/usr/bin/echo"
-    args = [ "TMP_CREATE", "{full_path}" ]
-}
+## Validation
 
-task ingest_tmp_file {
-    exec = "/usr/bin/echo"
-    args = [ "TMP_READY", "{full_path}" ]
-}
-
-rule tmp_created {
-    watch = "/tmp"
-    events = [ CREATE ]
-    exclude = [ "#*", ".*", "*.swp", "*.tmp" ]
-    run = [ "tmp_created" ]
-}
-
-rule tmp_ready {
-    watch = "/tmp"
-    events = [ CLOSE_WRITE ]
-    exclude = [ "#*", ".*", "*.swp", "*.tmp" ]
-    run = [ "ingest_tmp_file" ]
-}
-```
-
-## Validation notes
-
-After parsing succeeds, `inotask` performs semantic validation before runtime startup.
-
-Current validation includes:
-
-- watched paths must be absolute
-- task executable paths must be absolute
-- duplicate task names
-- duplicate rule names
-- unknown task names referenced by `run`
-- duplicate task names inside a single rule `run` list
-- empty event lists
-- empty `run` lists
-- invalid task `exec` paths
-
-This means many configuration mistakes are rejected before any `inotify` watches are opened.
-
-You can run the same parse, validation, and derived-watch planning without
-opening runtime watches:
+Use check mode before deploying a configuration:
 
 ```sh
 ./inotask --check inotaskd.cfg
 ```
 
-## Notes
+Check mode reads, parses, validates, builds the derived watch plan, prints the
+startup summary, and exits without opening inotify watches.
 
-- Tasks are launched with `execv()`, not through a shell.
-- Runtime logs include the expanded argv passed to `execv()`.
-- `settle_ms` defaults to `0`.
-- Unknown placeholders are currently left unchanged.
-- One matching event currently launches one new child process per matching task.
+Validation rejects:
+
+- malformed syntax, unknown fields, duplicate fields, and empty explicit lists
+- relative task executable or watch paths
+- missing, non-regular, or non-executable task executables
+- duplicate task or rule names
+- unknown or repeated task names in a rule's `run` list
+- missing required task or rule fields
+
+Whether a configured watch path can actually be opened is checked only when the
+runtime session starts.
+
+## Complete Example
+
+```cfg
+task ingest_file {
+    exec = "/usr/bin/echo"
+    args = [ "READY", "{full_path}", "{entry_name}", "{event}" ]
+}
+
+task report_change {
+    exec = "/usr/bin/echo"
+    args = [ "CHANGED", "{full_path}" ]
+}
+
+rule files_ready {
+    watch = "/srv/incoming"
+    events = [ CLOSE_WRITE ]
+    exclude = [ ".*", "*.tmp", "*.swp" ]
+    run = [ "ingest_file" ]
+}
+
+rule files_changing {
+    watch = "/srv/incoming"
+    events = [ MODIFY ]
+    exclude = [ ".*", "*.tmp", "*.swp" ]
+    settle_ms = 250
+    run = [ "report_change" ]
+}
+```

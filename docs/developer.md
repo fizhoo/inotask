@@ -1,392 +1,246 @@
 # Developer Guide
 
-This document is a code-tour for `inotask`.
-It is meant to help a developer quickly answer:
+This guide maps responsibilities, ownership, and runtime control flow. Read
+`design.md` first for policy and `config.md` for user-facing behavior.
 
-- where config text becomes structured data
-- where validation happens
-- how watches are built
-- how runtime events become task launches
-- which modules own which responsibilities
+## Program Flow
 
-## Big picture
+```text
+config file
+  -> loader
+  -> lexer and parser
+  -> config model
+  -> validator
+  -> runtime watch plan
+  -> inotify session
+  -> event matching and task launch
+```
 
-The current program flow is:
+`inotask_main.c` coordinates the process. Other modules keep parsing, storage,
+validation, watch management, and logging separate.
 
-1. `inotask_main.c` starts the process
-2. `inotask_load.c` reads the config file from disk
-3. `inotask_parser.c` parses config text into an `it_config`
-4. `inotask_validate.c` checks semantic and executable-path validity
-5. `inotask_runtime.c` builds the runtime watch plan and opens `inotify`
-6. `inotask_main.c` reads events, matches rules, expands placeholders, and forks children
-7. `inotask_log.c` reports runtime diagnostics to stderr
+## Modules
 
-## Module tour
+### `inotask_config.h` / `inotask_config.c`
 
-### `inotask_config.h` and `inotask_config.c`
+Owns the configuration data model and its memory:
 
-This is the core data-model layer.
+- `it_str` and `it_str_vec`
+- `it_task`, `it_rule`, and `it_watch`
+- `it_config`
+- task and rule insertion
+- derived-watch merging
+- configuration error strings
 
-It defines the main structs used everywhere else:
+Adding a rule also merges its path and event mask into `cfg->watches`. The
+derived list is runtime input; configured rules remain the source for matching.
 
-- `it_str` — owned heap string with explicit length
-- `it_str_vec` — dynamic array of owned strings
-- `it_task` — one named executable plus argument templates
-- `it_rule` — one rule with watch path, event mask, optional include/exclude filters, and task names to run
-- `it_watch` — one derived watch path plus merged event mask
-- `it_config` — top-level config object containing watches, tasks, and rules
+### `inotask_lexer.h` / `inotask_lexer.c`
 
-This layer is also responsible for:
+Converts source text into identifiers, strings, punctuation, and end-of-file
+tokens. It does not understand task or rule semantics.
 
-- initializing and freeing config-owned memory
-- adding tasks and rules into the config model
-- merging rules into the derived watch list
-- returning human-readable config validation error strings
+### `inotask_parser.h` / `inotask_parser.c`
 
-### `inotask_lexer.h` and `inotask_lexer.c`
+Consumes tokens and populates `it_config`. It owns grammar rules, required and
+optional fields, list syntax, duplicate-field detection, and line/column parse
+errors.
 
-This is the tokenization layer.
+### `inotask_validate.h` / `inotask_validate.c`
 
-It turns raw config text into tokens such as:
+Checks relationships and filesystem properties after parsing:
 
-- identifiers
-- strings
-- `{` and `}`
-- `[` and `]`
-- `,`
-- `=`
+- duplicate task and rule names
+- unknown or repeated task references
+- task executable existence, type, and execute permission
 
-The lexer does not understand tasks or rules as concepts.
-It only answers: “what is the next token in this input buffer?”
+Absolute-path and empty-list checks occur while config objects are added.
 
-### `inotask_parser.h` and `inotask_parser.c`
+### `inotask_load.h` / `inotask_load.c`
 
-This is the syntax layer.
+Provides the file-oriented loading entry point. It reads the file, invokes the
+parser and validator, and converts their failures into user-facing log messages.
 
-It consumes lexer tokens and builds structured config objects.
+### `inotask_runtime.h` / `inotask_runtime.c`
 
-It understands the grammar for:
+Owns watch planning and the live inotify session:
 
-- `task NAME { ... }`
-- `rule NAME { ... }`
-- field lists such as `args = [ ... ]`
-- event lists such as `events = [ CREATE, CLOSE_WRITE ]`
+- concrete `it_watch_target` values
+- watch-descriptor bindings
+- one inotify file descriptor
+- installation and cleanup of watches
+- conversion between internal and raw event masks
 
-The parser is responsible for syntactic correctness.
-Examples of parser-level failures:
+The current lookup is a linear scan of watch bindings. This is sufficient for
+the current non-recursive scale but should be reconsidered with recursion.
 
-- missing `}`
-- malformed list syntax
-- unknown field shape
-- bad token ordering
+### `inotask_log.h` / `inotask_log.c`
 
-It reports line/column information through `it_parse_error`.
+Provides severity filtering and stderr output. `INOTASK_LOG_LEVEL` is parsed
+once during startup. Runtime code should use `it_log_*()` rather than writing
+diagnostics directly.
 
-### `inotask_validate.h` and `inotask_validate.c`
+Use levels consistently:
 
-This is the semantic validation layer.
-
-It runs after parsing succeeds.
-
-This layer checks things that require looking across the full parsed config,
-including:
-
-- duplicate task names
-- duplicate rule names
-- unknown task names in a rule `run` list
-- duplicate task names inside one rule `run` list
-- whether each task `exec` path exists
-- whether each task `exec` path is a regular file
-- whether each task `exec` path is executable
-
-This layer is what turns “the file parsed” into “the config is actually usable.”
-
-### `inotask_load.h` and `inotask_load.c`
-
-This is the orchestration layer for config loading.
-
-It handles the full startup sequence for configuration:
-
-- read file contents
-- parse into `it_config`
-- validate the parsed result
-- report user-facing load errors
-
-If you want one entry point for “load the config file correctly,” this is it.
-
-### `inotask_runtime.h` and `inotask_runtime.c`
-
-This is the runtime watch layer.
-
-It translates validated config data into an actual `inotify` session.
-
-Key responsibilities:
-
-- build a runtime plan from derived watches
-- open one `inotify` file descriptor
-- install one watch per derived target
-- keep a mapping from inotify watch descriptor (`wd`) to runtime target
-- convert between internal event masks and Linux `inotify` masks
-
-Current design:
-
-- one `inotify` fd
-- many watch descriptors attached to that one fd
-- blocking reads on that fd in the main loop
-
-### `inotask_log.h` and `inotask_log.c`
-
-This is a small stderr logging helper.
-
-It provides severity-based logging:
-
-- `ERROR`
-- `WARN`
-- `INFO`
-- `DEBUG`
-
-Runtime code uses this instead of sprinkling raw `fprintf(stderr, ...)`
-through the project.
-
-`INFO` is reserved for service and task lifecycle messages. `DEBUG` carries
-per-watch and per-event internals such as watch descriptors, raw masks, rule
-matching, and settle-timer updates.
+- `ERROR`: failed operation or lost correctness
+- `WARN`: recoverable but suspicious condition
+- `INFO`: service or task lifecycle
+- `DEBUG`: per-watch, per-event, matching, or timer detail
 
 ### `inotask_main.c`
 
-This is the top-level runtime driver.
+Owns top-level runtime policy:
 
-It currently owns the live daemon behavior:
+- CLI handling and startup summaries
+- signal flags and child reaping
+- the `poll()` and `read()` event loop
+- event path construction and rule matching
+- filename filtering
+- settle timer storage and expiry
+- placeholder expansion and argv construction
+- `fork()` and `execv()`
+- final cleanup and process status
 
-- startup summary printing
-- `SIGCHLD` handling and child reaping
-- `SIGINT` / `SIGTERM` handling for graceful shutdown
-- `poll()` on the `inotify` fd with settled-event timeouts
-- per-event rule matching
-- include/exclude filename filtering with `fnmatch()`
-- per-rule, per-full-path `settle_ms` scheduling
-- runtime placeholder expansion for task arguments
-- `fork()` + `execv()` task launching
-- child exit status logging
+This file is intentionally the policy boundary. Generic watch-session behavior
+belongs in `inotask_runtime.c`; generic config behavior belongs in config,
+parser, or validation modules.
 
-If you want to understand what happens after an event arrives, this is the file
-that matters most.
+## Ownership
 
-## Important control flows
+### Configuration
 
-### Config startup flow
+`it_config` owns every task, rule, derived watch, string, and string vector
+inserted into it. Release the complete graph with `it_config_free()`.
 
-The startup path is roughly:
+Insertion helpers follow a commit-on-success pattern: vector lengths advance
+only after all storage for the new value has been acquired.
 
-1. initialize `it_config`
-2. call `it_load_config_file()`
-3. print startup summary tables
-4. build runtime plan
-5. open runtime session
-6. enter the event loop
+### Runtime Plan
 
-This means config problems are caught early, before any watches are installed.
+`it_runtime_plan` owns copied target paths. It does not borrow path storage from
+the configuration. Release it with `it_runtime_plan_free()`.
 
-### Rule-to-watch derivation
+### Runtime Session
 
-Users write rules, not low-level watch objects.
-Internally, rules that point at the same `watch` path are merged into one
-derived watch with a combined event mask.
+`it_runtime_session` owns the inotify file descriptor and watch bindings.
+`it_runtime_session_free()` closes the descriptor and releases bindings.
 
-That gives two benefits:
+### Pending Events
 
-- config stays rule-oriented and easy to read
-- runtime avoids installing duplicate watches for the same path when only the event mask needs to be widened
+The pending-event vector in `inotask_main.c` owns copied entry and full paths.
+Removing or freeing a pending item must release both strings.
 
-Important detail: matching still happens at the rule level later.
-The derived watch only controls what the kernel reports to us.
+### Task Arguments
 
-### Event loop flow
+Each launch builds a temporary expanded argv. The parent frees its copy after
+`fork()`. The child uses its inherited copy until `execv()` replaces the process
+image or fails.
 
-At runtime, the event loop does this:
+## Control Flows
 
-1. reap dead children when `SIGCHLD` has fired
-2. launch any settled events whose quiet timers have expired
-3. compute the next settle timeout, if any
-4. `poll()` the single `inotify` fd with that timeout
-5. receive one or more raw `struct inotify_event` records
-6. log and skip `IN_Q_OVERFLOW` records before watch-descriptor lookup
-7. map each event `wd` back to a watched path target
-8. convert the Linux mask to the internal `it_event_mask`
-9. log the event summary
-10. scan configured rules for matches
-11. either launch matching tasks immediately or update a settle timer
+### Startup
 
-If `SIGINT` or `SIGTERM` arrives, the signal handler sets a stop flag. The
-event loop exits after `poll()` or `read()` is interrupted, then normal cleanup
-runs before `main()` returns zero. Fatal polling, inotify read, stream closure,
-or descriptor failures use the same cleanup path but return nonzero.
+1. Parse CLI arguments and logging environment.
+2. Load and validate the configuration.
+3. Initialize and build the runtime plan.
+4. Print summaries.
+5. Return early for `--check`.
+6. Open watches and install signal handlers.
+7. Enter the event loop.
 
-Overflow detail:
-`IN_Q_OVERFLOW` events report kernel queue overflow and use `wd = -1`, so they
-must be handled before watch-descriptor mapping. `inotask` logs an error and
-continues running because the kernel cannot tell us which events were lost.
+All failures before step 7 return nonzero after releasing initialized state.
 
-### Rule matching flow
+### Event Loop
 
-A rule matches an event only if all of these pass:
+Each iteration:
 
-- watched path matches the target path
-- event masks overlap
-- `include` patterns match, if any are configured
-- `exclude` patterns do not match, if any are configured
+1. reaps children when requested
+2. launches expired settled events
+3. computes the nearest settle deadline
+4. polls the inotify descriptor
+5. reads and bounds-checks raw event records
+6. handles queue overflow before watch lookup
+7. resolves and normalizes ordinary events
+8. dispatches matching rules
 
-The `include` and `exclude` filters are evaluated against `entry_name`, not the
-full path.
+`SIGINT` or `SIGTERM` interrupts polling and leads to a zero-status cleanup.
+Fatal event-source failures set a nonzero final status before using the same
+cleanup path.
 
-Important edge case:
-if a rule has `include` or `exclude` filters, but the event has no
-`entry_name`, that rule does not match.
+### Rule Matching
 
-### Settled event flow
+A rule matches when:
 
-`settle_ms` defaults to `0`. Rules with that default launch immediately.
+1. its configured path equals the runtime target path
+2. its event mask overlaps the normalized event
+3. inclusion patterns pass, when present
+4. exclusion patterns do not match
 
-When a matching rule has a non-zero `settle_ms`, the event is stored in a
-pending settled-event list keyed by rule index and full path. If another
-matching event arrives for the same rule and full path before the quiet window
-expires, the existing pending event is updated and its due time is pushed out.
+Filters use `entry_name`. This exact-path assumption is the main dispatch
+boundary recursive watching must redesign.
 
-When the pending event becomes due, `inotask_main.c` builds event variables
-from the settled path and launches the rule's tasks once.
+### Settling
 
-This is intended for noisy events such as `MODIFY`. `CLOSE_WRITE` ingestion
-rules usually do not need settling because the event already means the writing
-side closed the file.
+Pending work is keyed by rule index and full path. A repeated match merges the
+event mask and replaces the due time. Expiry reconstructs event variables from
+the stored paths and launches the rule once.
 
-### Placeholder expansion flow
+### Child Lifecycle
 
-Configured task args are stored as templates.
-Before `execv()`, `inotask_main.c` expands placeholders using the current
-filesystem event.
+The parent logs each launch and immediately resumes event processing. `SIGCHLD`
+only sets a flag. The main loop calls `waitpid(-1, ..., WNOHANG)` until no exited
+children remain and logs each status.
 
-Current supported placeholders are:
+## Extending the Code
 
-- `{watch_path}`
-- `{entry_name}`
-- `{full_path}`
-- `{event}`
+### Add a Configuration Field
 
-Example:
+1. Add storage and defaults to the config model.
+2. Parse the field and reject duplicates.
+3. Add semantic validation when needed.
+4. Update summary output if operationally useful.
+5. Implement runtime behavior.
+6. Update `config.md`, design notes, and tests.
 
-```cfg
-args = [ "READY", "{full_path}", "{event}" ]
+### Add an Event
+
+1. Add an internal event bit.
+2. Parse and display its name.
+3. Map to and from inotify flags.
+4. Document normalization behavior.
+5. Test mask conversion and dispatch.
+
+### Add Recursive Watching
+
+Do not only append subdirectory paths. Runtime targets must distinguish the
+configured rule root from the concrete watched directory. Recursive work also
+needs dynamic insertion/removal, symlink policy, queue-overflow recovery, and a
+nonlinear watch-descriptor lookup.
+
+## Validation Workflow
+
+The repository currently relies on compiler analysis, config checks, and manual
+runtime smoke tests; it does not yet have a maintained automated test suite.
+
+Before publishing a change:
+
+```sh
+make clean
+make
+make check
+git diff --check
 ```
 
-A matching close-write event for `/tmp/report.txt` becomes roughly:
+Use `make scan`, `make san`, and the checks in `releasing.md` for release work
+or changes involving ownership, signals, parsing, or event-record handling.
 
-```text
-READY /tmp/report.txt CLOSE_WRITE
-```
+## Safety Boundaries
 
-### Task launch flow
+- Task execution is shell-free unless the config explicitly invokes a shell.
+- Configuration is validated before watches open.
+- Signal handlers do not allocate or log.
+- Children are reaped asynchronously.
+- Runtime ownership has explicit init/free pairs.
+- Queue overflow is visible but not recoverable yet.
 
-For each matched task:
-
-1. resolve the named `task` from the config
-2. expand its `args` templates for the current event
-3. build `argv` as `[ exec, expanded_args..., NULL ]`
-4. `fork()`
-5. in the child, call `execv()`
-6. in the parent, log the child pid and continue the event loop
-
-There is no shell involved.
-That means no shell quoting, no pipelines, and no redirection syntax in task
-config.
-
-### Child reaping flow
-
-Because children run asynchronously, the parent must reap them.
-
-Current model:
-
-- `SIGCHLD` handler sets a flag
-- the main loop notices the flag
-- `waitpid(-1, &status, WNOHANG)` is called until no reapable children remain
-- exit/signal status is logged
-
-This prevents zombie accumulation in a long-running daemon.
-
-### Shutdown flow
-
-`SIGINT` and `SIGTERM` are handled separately from `SIGCHLD`.
-
-Current model:
-
-- the stop signal handler sets a global stop flag
-- the blocking `poll()` call returns with `EINTR`
-- the event loop exits
-- pending settled events, runtime watches, runtime plan, and config memory are
-  freed through the normal cleanup path
-
-The handler itself does not log or allocate memory.
-
-## Memory ownership notes
-
-### `it_str`
-
-`it_str` owns a heap string and stores its length.
-It is the basic owned-string type for the config model.
-
-### `it_str_vec`
-
-`it_str_vec` is a growable array of `it_str` values.
-This is used for things like:
-
-- task args
-- rule include patterns
-- rule exclude patterns
-- rule run lists
-
-### Why helpers like `str_vec_push()` exist
-
-Helpers such as `str_vec_push()` handle the repetitive but important work of:
-
-- growing capacity with `realloc()`
-- copying incoming text into owned storage
-- updating vector length only on success
-
-That gives the parser and config-building code one safe path for “append this
-string to the vector.”
-
-In other words, it is not parser-specific logic.
-It is shared config-storage infrastructure used by the parser/config layer.
-
-## Current safety model
-
-The current implementation already makes a few important safety choices:
-
-- task execution is shell-free via `execv()`
-- config is validated before watches are opened
-- executable paths are checked for existence, type, and execute permission
-- child processes are reaped
-- logging is explicit and separated from the summary table output
-
-## Current limitations
-
-These are important for any contributor to understand:
-
-- Linux-only via `inotify`
-- no recursive watch walking
-- queue overflow recovery beyond logging is not implemented
-- no queueing or flood control yet
-- no worker pool or concurrency limit yet
-- one matching event can launch one new child immediately
-- no config live-reload yet
-- filtering is filename-based glob matching, not regex matching
-
-## Good next places to extend
-
-If we keep building from today’s foundation, the most natural next layers are:
-
-- `IN_Q_OVERFLOW` handling and reporting
-- bounded concurrency / worker limits
-- optional event coalescing modes
-- config live-reload with parse-validate-swap
-- optional systemd sandboxing guidance for known deployment profiles
-- optional per-task user/group execution controls
+See `roadmap.md` for planned policy and reliability work.

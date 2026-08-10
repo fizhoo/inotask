@@ -1,456 +1,177 @@
-# Design Notes
+# Design
 
-This document explains the current architecture and design choices behind
-`inotask`.
+This document describes the architecture and intentional runtime policies of
+`inotask`. Configuration syntax belongs in `config.md`; implementation details
+belong in `developer.md`; future work belongs in `roadmap.md`.
 
-## High-level model
+## Goals
 
-`inotask` is a rules-first filesystem event runner.
+`inotask` is a small, predictable filesystem event runner. Its design favors:
 
-The main concepts are:
+- explicit rules and event names
+- explicit executable paths and argument vectors
+- early configuration validation
+- continued event ingestion while tasks run
+- observable service and child-process behavior
+- small policy surfaces that can be extended deliberately
 
-- `task` — named executable plus argument templates
-- `rule` — watched path, event list, and task names to run
-- derived watch — merged runtime watch built from configured rules
+It is Linux-specific because its event model is built directly on inotify.
 
-## Why rules-first
+## Configuration Model
 
-The configuration is centered on rules because that matches how users usually
-think about the problem:
+Users define:
 
-- watch this path
-- for these events
-- run these tasks
+- a `task`: named executable plus argument templates
+- a `rule`: path, events, filters, settle policy, and task names
 
-Internally, multiple rules that reference the same path are merged into one
-derived watch with the union of required event bits.
+The configuration layer derives a third object:
 
-This keeps the user-facing config simple while reducing duplicate watch setup in
-the runtime. Matching still happens later at the rule level, so two rules can
-share one watched path but still differ by event mask, include patterns,
-exclude patterns, or run-list.
+- a `watch`: path plus the union of events required by every rule on that path
 
-## Runtime flow
+This rules-first model matches user intent while avoiding duplicate kernel
+watches. Rules sharing a path still match independently, so they may use
+different events, filters, settle windows, and task lists.
 
-Current runtime flow:
+## Startup
 
-1. read config file
-2. parse config
-3. validate config
-4. build derived watch plan
+Startup proceeds in a fixed order:
+
+1. read and parse the configuration
+2. validate names, references, paths, and task executables
+3. derive the merged watch plan
+4. print configuration and runtime-plan summaries
 5. open one inotify instance
-6. install one or more watches on that instance
-7. read events from the inotify file descriptor
-8. match events against rules
-9. launch matching tasks with `fork()` + `execv()`
-10. reap exited child processes
+6. install each derived watch
+7. install signal handlers
+8. enter the event loop
 
-## One inotify fd, many watches
+`--check` stops after step 4. This makes it suitable for preflight checks
+without consuming inotify resources.
 
-`inotask` currently uses one inotify instance and one inotify file descriptor.
-Many watched paths are attached to that one fd.
+## Inotify Model
 
-This means:
+One inotify instance and file descriptor serve every configured path. Each
+installed watch receives a kernel watch descriptor (`wd`), which the runtime
+maps back to its concrete watch target.
 
-- the process blocks on one fd
-- any watched path can wake the read
-- each returned event includes a watch descriptor (`wd`)
-- `wd` is mapped back to the runtime watch target
+The public event names intentionally normalize several raw flags:
 
-This is the normal Linux inotify pattern for a daemon of this size.
+| Internal event | Relevant inotify flags |
+|---|---|
+| `CREATE` | `IN_CREATE`, `IN_MOVED_TO` |
+| `MODIFY` | `IN_MODIFY` |
+| `DELETE` | `IN_DELETE`, `IN_DELETE_SELF` |
+| `MOVE` | `IN_MOVED_FROM`, `IN_MOVED_TO`, `IN_MOVE_SELF` |
+| `ATTRIB` | `IN_ATTRIB` |
+| `CLOSE_WRITE` | `IN_CLOSE_WRITE` |
 
-## Event model
+This keeps common rules readable. The current `MOVE` event is less precise than
+the raw moved-from/moved-to distinction and does not expose move cookies to
+tasks.
 
-The current internal event model is intentionally smaller than raw Linux
-`inotify`, but it now includes one ingestion-critical event:
+## Event Dispatch
 
-- `CREATE`
-- `MODIFY`
-- `DELETE`
-- `MOVE`
-- `ATTRIB`
-- `CLOSE_WRITE`
+For each raw event record, the main loop:
 
-A key recent change is that `CLOSE_WRITE` is its own first-class event rather
-than being silently folded into `MODIFY`.
+1. handles `IN_Q_OVERFLOW` before watch lookup
+2. resolves `wd` to a runtime target
+3. normalizes the raw event mask
+4. constructs event paths and placeholders
+5. scans rules that use the target path
+6. checks event overlap and filename filters
+7. launches immediately or updates a settle timer
 
-That matters because ingestion workflows often want to wait until a file opened
-for writing has been closed before trying to parse it.
+Filename filters use `entry_name`, not `full_path`. A rule with filters does not
+match an event that lacks an entry name.
 
-## Task launching model
+## Task Execution
 
-Tasks are launched with:
+Tasks run through `fork()` and `execv()`. The daemon builds argv explicitly as:
 
-- `fork()`
-- `execv()`
+```text
+[ exec, expanded_args..., NULL ]
+```
 
-There is no shell command-string layer in the current model.
+There is no implicit shell. This avoids shell quoting and expansion surprises,
+especially for event paths containing spaces or punctuation. A configuration
+may invoke a shell explicitly, but literal event substitution makes wrapper
+executables safer for nontrivial commands or untrusted filenames.
 
-This was chosen to keep runtime behavior explicit and to avoid shell parsing
-surprises.
+Task arguments are templates expanded immediately before launch. Expansion is
+literal: placeholder substitution does not trigger further parsing.
 
-### Why `execv()`
+## Asynchronous Children
 
-Benefits of the current approach:
+The parent does not wait for a launched task before returning to event
+processing. `SIGCHLD` sets a flag, and the main loop drains exited children with
+`waitpid(..., WNOHANG)`.
 
-- explicit executable path
-- explicit argument vector
-- no shell quoting rules
-- safer handling of filenames with spaces and punctuation
-- easier to reason about exact process arguments
+This prevents zombies and keeps the event loop responsive, but the current
+policy permits unbounded concurrent children. There is no worker pool, queue,
+or busy-task policy yet.
 
-## Argument expansion
+## Settling
 
-Configured task args are stored as templates.
-At dispatch time, placeholders are expanded using event-specific values.
+`settle_ms` provides opt-in, per-path coalescing for noisy events. Pending work
+is keyed by rule and full path. A repeated match updates the accumulated event
+mask and resets the deadline. The rule runs once after that path remains quiet.
 
-Supported placeholders:
+Settling is intentionally not a general queue. Different rules or paths retain
+independent timers, and immediate rules continue to launch once per match.
 
-- `{watch_path}`
-- `{entry_name}`
-- `{full_path}`
-- `{event}`
+## Signals and Shutdown
 
-Rules may also constrain which events reach this stage by applying glob-style
-`include` and `exclude` filters to `entry_name`.
+Signal handlers only set `sig_atomic_t` flags:
 
-This gives the convenience of runtime metadata injection while keeping the
-execution model shell-free.
+- `SIGCHLD` requests child reaping
+- `SIGINT` and `SIGTERM` request shutdown
 
-In other words, the config stores argument templates, and the runtime turns
-those templates into concrete argv strings using the actual event being
-handled.
+The event loop handles the request after an interrupted system call, then frees
+pending events, closes the inotify session, releases the watch plan, and frees
+the configuration. A requested shutdown returns zero.
 
-## Async-only execution
+Fatal polling, inotify read, stream closure, or descriptor failures use the
+same cleanup path and return nonzero so a service manager can restart the
+daemon.
 
-The current runtime is async-only.
-`inotask` does not wait synchronously for a task to finish before returning to
-the main event loop.
+## Failure Policy
 
-This decision was made because a filesystem event daemon should continue reading
-new events rather than blocking on long-running child processes.
+Startup failures return nonzero before event processing begins. During runtime:
 
-## Child reaping
+- a task allocation, `fork()`, or child `execv()` failure is logged and event
+  processing continues
+- a child failure does not terminate the daemon
+- queue overflow is logged and processing continues because future events are
+  still useful
+- a broken event source terminates the daemon with a nonzero status
 
-Because tasks run asynchronously, the daemon must reap exited child processes to
-avoid zombies.
-
-Current behavior:
-
-- `SIGCHLD` sets a reap flag
-- the main loop calls non-blocking `waitpid(..., WNOHANG)`
-- child exit status is logged
-
-This keeps the event loop responsive while still handling child lifecycle
-correctly.
-
-## Graceful shutdown
-
-`SIGINT` and `SIGTERM` set a stop flag rather than terminating the process
-immediately. The event loop wakes from `poll()`, exits normally, reaps any
-already-exited children, and frees owned runtime/configuration memory.
-
-This keeps Ctrl-C and service-manager shutdown paths predictable, and it makes
-runtime analysis tools such as Valgrind report normal cleanup instead of a
-signal-killed process.
-
-## Current event-processing policy
-
-Current policy is intentionally simple:
-
-- one incoming event record
-- zero or more matching rules
-- immediate rules launch one new task per matched task
-- rules with `settle_ms` launch after each matching full path becomes quiet
-
-There is currently:
-
-- no queue
-- no throttling
-- no per-file flood protection
-- no bounded child-process pool
-
-`settle_ms` is the one intentional coalescing mechanism. It is configured per
-rule and grouped by full path. Repeated matching events for the same rule and
-full path reset that path's timer; when the timer expires, the rule runs once
-for the settled path.
-
-This matches the current project goal of straightforward per-event launching.
+After `IN_Q_OVERFLOW`, the kernel cannot identify the lost events. The current
+runtime reports that uncertainty but does not rebuild state.
 
 ## Logging
 
-`inotask` uses a small logging layer that writes diagnostics to stderr.
-Summary tables printed at startup still go to stdout.
+Configuration summaries go to stdout. Diagnostics go to stderr through a small
+severity-filtered logger.
 
-Logged events currently include:
+- `INFO` covers service and task lifecycle
+- `DEBUG` covers watch bindings, raw records, normalized events, matching, and
+  settle updates
+- `WARN` and `ERROR` identify suspicious and failed operations
 
-- config/load errors
-- runtime watch startup issues
-- event matches
-- task launches, including expanded argv
-- reaped child statuses
-- shutdown requests
-- inotify queue overflow errors
+systemd captures both streams in the journal. The logger does not depend on
+systemd or emit journal-specific metadata.
 
-At the default `info` level, logs focus on service and task lifecycle. The
-`debug` level adds watch descriptor bindings, raw inotify masks and cookies,
-normalized event paths, rule matching decisions, and settle-timer updates.
+## Current Boundaries
 
-When run under `systemd`, stderr is typically captured into `journald`.
+The current implementation deliberately does not provide:
 
-`--check` mode runs config loading, semantic validation, and derived watch-plan
-building, then exits before opening inotify watches.
-
-Fatal `poll()`, inotify read, stream closure, and descriptor errors terminate
-the event loop with a nonzero status. Queue overflow remains recoverable: it is
-logged as an error and event processing continues.
-
-## Current limitations
-
-Important limitations in the current design:
-
-- Linux-only
-- no recursive watch walking
-- inotify queue overflow is detected and logged, but lost events cannot be
-  reconstructed
-- no advanced queueing policy yet
-- no per-file dedupe or bounded worker pool yet
-- no full raw-inotify event surface yet
-- current move handling is simplified compared with raw `IN_MOVED_FROM` and
-  `IN_MOVED_TO`
-
-## Why these tradeoffs are acceptable right now
-
-The current implementation is optimized for clarity and incremental progress.
-It gives a working end-to-end daemon with:
-
-- explicit config
-- explicit runtime execution
-- shell-free task launching
-- child reaping
-- useful ingestion-ready `CLOSE_WRITE` support
-- optional per-path settling for noisy `MODIFY` workflows
-
-More advanced scheduling, queueing, and flood-control behavior can be layered on
-later without having to discard the current model.
-
-## Market need and roadmap
-
-`inotask` is best understood as a small, predictable middle ground between
-`incron`, `systemd.path`, shell loops around `inotifywait`, and larger
-developer-oriented watchers such as Watchman or `watchexec`.
-
-The recurring need is not simply "cron, but for files." Users want a filesystem
-event runner that can answer a few practical questions reliably:
-
-- which path changed?
-- which event happened?
-- which rule matched?
-- which exact command ran?
-- what happens if many events arrive quickly?
-- what happens if the task writes back into the watched tree?
-- what happens if the daemon is run under `systemd`?
-
-Those questions are where existing tools tend to become uncomfortable.
-
-### Evidence from adjacent tools
-
-`incron` proves there is demand for filesystem-triggered automation, but it
-also exposes several design traps:
-
-- one watched path per incrontab table entry limits natural rule composition
-- recursive watches have been a long-standing user request
-- shell-style command execution makes quoting and special characters risky
-- task output and child lifecycle behavior can be difficult to reason about
-- commands that write into watched paths can accidentally trigger loops
-- project documentation and maintenance history have been uneven
-
-`systemd.path` is a strong service-management primitive, but it is intentionally
-coarse:
-
-- it is good for starting a unit when "something changed"
-- it is less good when the task needs the specific changed filename
-- path units rate-limit failures instead of modeling filesystem-event workload
-- users often need wrapper scripts to recover event details
-
-`inotifywait` is useful as a diagnostic and scripting primitive, but production
-workflows built from shell loops usually need to reinvent:
-
-- argument quoting
-- process supervision
-- duplicate suppression
-- restart behavior
-- queue overflow handling
-- logging conventions
-
-Watchman and `watchexec` show that users value filtering, debouncing,
-coalescing, ignores, restart behavior, and diagnostics. They also aim at a
-broader developer-tooling space than `inotask` needs to occupy.
-
-The opportunity for `inotask` is therefore narrow but real: be the boring,
-explicit, Linux-native filesystem event runner for ingestion and sysadmin
-automation.
-
-### Product thesis
-
-`inotask` should not try to be a general job scheduler, a build tool, or a
-cross-platform file watcher.
-
-Its focused thesis should be:
-
-> Run exact commands from exact filesystem events with exact event metadata,
-> while making overload, recursion, and child-process behavior explicit.
-
-This favors:
-
-- explicit argv execution by default
-- first-class event placeholders
-- rule-level filtering
-- startup validation
-- clear logs
-- bounded concurrency
-- deliberate queueing policy
-- opt-in recursive watching
-
-It also means `inotask` can remain small while still solving real problems that
-are awkward in `incron`, `systemd.path`, and ad-hoc shell loops.
-
-### Core user needs
-
-The strongest user needs to design around are:
-
-- ingestion readiness: trigger after writers close files, especially with
-  `CLOSE_WRITE`
-- metadata handoff: pass `{full_path}`, `{entry_name}`, `{watch_path}`, and
-  `{event}` without shell parsing
-- safe execution: avoid surprise shell expansion and filename quoting bugs
-- multiple workflows per path: let several rules share one watched directory
-- noise control: filter include/exclude patterns before launching tasks
-- loop control: detect or prevent self-triggering workflows
-- overload control: define what happens when events arrive faster than tasks
-  finish
-- service friendliness: behave predictably under `systemd` and `journald`
-- diagnosability: log what matched, what launched, and how children exited
-
-The current implementation already covers several of these needs:
-
-- rules-first configuration
-- merged derived watches
-- `CLOSE_WRITE`
-- placeholder expansion
-- include/exclude filters
-- shell-free `execv()`
-- async task launch
-- zombie-safe child reaping
-- stderr logging for service use
-
-### Roadmap
-
-The roadmap should preserve the current simple event-runner model while adding
-control knobs where users actually feel pain.
-
-#### Phase 1: Reliability and clarity
-
-Near-term work should make current behavior easier to trust:
-
-- keep `--check` useful for service preflight and CI
-- keep expanded argv launch logs precise and readable
-- include watch descriptor, rule name, task name, and event mask in debug logs
-- document deliberate `/bin/sh -c` usage for users who need shell features
-- add example `systemd` service units
-- add examples for ingestion, media processing, backup sync, and config reloads
-
-#### Phase 2: Backpressure
-
-The next major feature area should be overload behavior:
-
-- per-rule `max_concurrency`
-- per-rule or per-task `on_busy = parallel | drop | queue`
-- optional queue size limits
-- explicit logs for dropped or delayed events
-- child exit status policy hooks
-- flood tests for rapid create/modify/delete workloads
-
-This is more important than adding many new event names because uncontrolled
-process spawning is one of the fastest ways for a useful watcher to become
-dangerous.
-
-#### Phase 3: Debounce and coalescing
-
-Many filesystem operations produce bursts rather than one clean event.
-`inotask` should eventually support:
-
-- per-rule debounce windows
-- richer settled-event logging and metrics
-- per-file duplicate suppression
-- aggregate task mode for "run once after the burst"
-- event summaries passed to aggregate tasks through a file or environment
-
-This should be opt-in. The current one-event-one-launch model is still useful
-and should remain easy to understand.
-
-#### Phase 4: Loop protection
-
-Self-triggering workflows are common when tasks write logs, transformed files,
-temporary files, or state back into a watched tree.
-
-Useful protections include:
-
-- documented include/exclude patterns for output directories
-- optional per-rule cooldown
-- optional ignore patterns for task-created outputs
-- clear logs when the same rule fires repeatedly on the same path
-
-The goal is not to magically prove intent. The goal is to make accidental loops
-visible and easy to prevent.
-
-#### Phase 5: Recursive watching
-
-Recursive watching should be added carefully, not as a casual default.
-
-Required design points:
-
-- opt-in `recursive = true`
-- startup directory walk
-- automatic watch insertion for newly created directories
-- clear errors when kernel watch limits are reached
-- documentation for `fs.inotify.max_user_watches`
-- recovery behavior for queue overflow
-- tests for directory creation races
-
-Recursive support is valuable, but it is also where inotify tools become most
-surprising. `inotask` should treat it as a reliability feature, not a checkbox.
-
-#### Phase 6: Richer event surface
-
-After the runtime policy is stronger, expand the event model:
-
-- split `MOVE` into moved-from and moved-to events
-- expose move cookies where available
-- add delete-self, move-self, open, close-nowrite, and ignored events as needed
-- preserve simple aliases for users who do not need raw inotify detail
-
-The design should keep friendly event names while allowing advanced users to
-reason about raw Linux behavior when they need it.
-
-### Positioning statement
-
-`inotask` is a small Linux filesystem-event runner for predictable ingestion
-and sysadmin automation.
-
-It watches explicit paths, matches explicit rules, passes explicit event
-metadata, and launches explicit argument vectors without a shell by default.
-
-It should become the tool users reach for when `systemd.path` is too coarse,
-`incron` is too brittle, and an `inotifywait` shell loop has grown teeth.
-
-## Likely future directions
-
-Possible next design areas include:
-
-- per-file queueing
-- bounded concurrency
-- per-file duplicate suppression
-- richer Linux event coverage
 - recursive directory management
-- optional aggregate/coalesced task modes
+- bounded concurrency or queue policy
+- queue-overflow recovery
+- config live reload
+- per-task credentials
+- loop detection
+- the full raw inotify event surface
+
+The order and rationale for extending these boundaries are maintained in
+`roadmap.md`.

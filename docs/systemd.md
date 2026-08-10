@@ -1,29 +1,35 @@
-# systemd service
+# systemd Operation
 
-The supplied unit runs `inotask` as a system service. systemd captures both the
-startup summary on stdout and runtime diagnostics on stderr in the journal; the
-program does not need a separate journal logging mode.
+The supplied unit runs `inotask` as a system service. systemd captures the
+startup summary from stdout and runtime diagnostics from stderr in the journal.
+No journal-specific logging mode is required.
 
 ## Install
 
-Build and validate the configuration before installing it:
+Build and validate before installing:
 
 ```sh
 make
 make check CFG=inotaskd.cfg
-sudo make install install-config install-systemd CFG=inotaskd.cfg
+sudo make install install-systemd
+sudo make install-config CFG=inotaskd.cfg
 sudo systemctl daemon-reload
 sudo systemctl enable --now inotask.service
 ```
 
-The default locations are:
+Default locations:
 
-- executable: `/usr/local/bin/inotask`
-- configuration: `/etc/inotask/inotaskd.cfg`
-- unit: `/etc/systemd/system/inotask.service`
+| Item | Path |
+|---|---|
+| Executable | `/usr/local/bin/inotask` |
+| Configuration | `/etc/inotask/inotaskd.cfg` |
+| Unit | `/etc/systemd/system/inotask.service` |
 
-`make install-config` replaces the installed configuration with `CFG`. It is an
-explicit target so a normal binary update does not overwrite service config.
+`install-config` is separate because it overwrites the installed configuration.
+A normal `make install` updates only the executable.
+
+Before enabling the unit, confirm that every configured watch and executable is
+appropriate for the service host.
 
 ## Operate
 
@@ -35,58 +41,65 @@ sudo systemctl restart inotask.service
 sudo systemctl stop inotask.service
 ```
 
-The unit uses `Restart=on-failure`. A normal `SIGTERM` shutdown stays stopped;
-an unexpected nonzero exit is restarted after two seconds. `KillMode=control-group`
-also stops task processes still associated with the service when the unit stops.
+The unit uses `Restart=on-failure` with a two-second delay. Requested `SIGTERM`
+shutdown returns zero and remains stopped. Fatal event-source failures return
+nonzero and are eligible for restart.
 
-## Configure logging
+`KillMode=control-group` terminates task processes that remain in the service's
+control group when the unit stops.
 
-The unit defaults to info-level output. Create an override to enable debug logs
-without editing the installed unit:
+## Logging
+
+The unit defaults to `INOTASK_LOG_LEVEL=info`. To enable event-level debugging:
 
 ```sh
 sudo systemctl edit inotask.service
 ```
-
-Add:
 
 ```ini
 [Service]
 Environment=INOTASK_LOG_LEVEL=debug
 ```
 
-Then apply it:
+Then restart:
 
 ```sh
-sudo systemctl daemon-reload
 sudo systemctl restart inotask.service
+journalctl -u inotask.service -f
 ```
 
-Accepted levels are `error`, `warn`, `info`, and `debug`. Invalid values make
-startup fail rather than silently using an unintended logging configuration.
+Accepted levels are `error`, `warn`, `info`, and `debug`. Invalid values fail
+startup. Log prefixes remain part of each journal message; the unit does not add
+structured journal-priority metadata.
 
-For a direct terminal run, diagnostics use readable prefixes such as
-`INFO: watching for filesystem events`:
+## Permissions
 
-```sh
-INOTASK_LOG_LEVEL=debug ./inotask inotaskd.cfg
+The supplied unit has no `User=` or `Group=`, so a system manager starts it as
+root. Configured tasks therefore also start as root. Review task executables and
+arguments carefully.
+
+For least privilege, create an override containing a dedicated account:
+
+```ini
+[Service]
+User=inotask
+Group=inotask
 ```
 
-Those same stderr lines appear in `journalctl -u inotask.service`. The textual
-prefix remains part of the message; the unit does not add structured journal
-priority metadata.
+That account must be able to traverse each watched directory and execute each
+configured task. Tasks also need whatever read or write permissions their work
+requires.
 
-At `debug`, the journal also includes installed watch descriptors, raw inotify
-masks and cookies, normalized event paths, rule matching decisions, and
-settle-timer updates. Fatal event-loop failures return nonzero, allowing the
-unit's `Restart=on-failure` policy to restart the daemon.
+## Custom Paths
 
-## Paths and permissions
+If the executable or config is installed elsewhere, copy or override the unit's
+`ExecStart=`. A systemd override must first clear the original command:
 
-The service runs as `root` by default because watched paths and task permission
-requirements are deployment-specific. For a least-privilege deployment, add a
-`User=` and `Group=` override and ensure that account can traverse every watched
-directory and execute every configured task.
+```ini
+[Service]
+ExecStart=
+ExecStart=/custom/bin/inotask /custom/etc/inotask.cfg
+```
 
-If the executable or config is installed elsewhere, copy the unit and update
-`ExecStart=` to match. After any unit edit, run `systemctl daemon-reload`.
+Run `systemctl daemon-reload` after editing unit files directly. `systemctl edit`
+handles the override location for you.
