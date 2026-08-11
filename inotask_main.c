@@ -71,9 +71,9 @@ static void append_sep_text(char *buf, size_t cap, bool *first, const char *text
 }
 
 /**
- * @brief Convert an internal event mask into a comma-separated display string.
+ * @brief Convert an inotify event mask into a comma-separated display string.
  *
- * @param m Internal event mask.
+ * @param m Inotify event mask.
  * @param buf Output buffer.
  * @param cap Capacity of @p buf in bytes.
  */
@@ -82,13 +82,24 @@ static void events_to_buf(it_event_mask m, char *buf, size_t cap)
     bool first = true;
     if (cap == 0) return;
     buf[0] = '\0';
-    if ((m & IT_EVT_CREATE) != 0) append_sep_text(buf, cap, &first, "CREATE");
-    if ((m & IT_EVT_MODIFY) != 0) append_sep_text(buf, cap, &first, "MODIFY");
-    if ((m & IT_EVT_DELETE) != 0) append_sep_text(buf, cap, &first, "DELETE");
-    if ((m & IT_EVT_MOVE) != 0) append_sep_text(buf, cap, &first, "MOVE");
-    if ((m & IT_EVT_ATTRIB) != 0) append_sep_text(buf, cap, &first, "ATTRIB");
-    if ((m & IT_EVT_CLOSE_WRITE) != 0)
-        append_sep_text(buf, cap, &first, "CLOSE_WRITE");
+    if ((m & IN_ACCESS) != 0) append_sep_text(buf, cap, &first, "IN_ACCESS");
+    if ((m & IN_MODIFY) != 0) append_sep_text(buf, cap, &first, "IN_MODIFY");
+    if ((m & IN_ATTRIB) != 0) append_sep_text(buf, cap, &first, "IN_ATTRIB");
+    if ((m & IN_CLOSE_WRITE) != 0)
+        append_sep_text(buf, cap, &first, "IN_CLOSE_WRITE");
+    if ((m & IN_CLOSE_NOWRITE) != 0)
+        append_sep_text(buf, cap, &first, "IN_CLOSE_NOWRITE");
+    if ((m & IN_OPEN) != 0) append_sep_text(buf, cap, &first, "IN_OPEN");
+    if ((m & IN_MOVED_FROM) != 0)
+        append_sep_text(buf, cap, &first, "IN_MOVED_FROM");
+    if ((m & IN_MOVED_TO) != 0)
+        append_sep_text(buf, cap, &first, "IN_MOVED_TO");
+    if ((m & IN_CREATE) != 0) append_sep_text(buf, cap, &first, "IN_CREATE");
+    if ((m & IN_DELETE) != 0) append_sep_text(buf, cap, &first, "IN_DELETE");
+    if ((m & IN_DELETE_SELF) != 0)
+        append_sep_text(buf, cap, &first, "IN_DELETE_SELF");
+    if ((m & IN_MOVE_SELF) != 0)
+        append_sep_text(buf, cap, &first, "IN_MOVE_SELF");
 }
 
 /**
@@ -123,7 +134,7 @@ static void append_str_vec_quoted(const it_str_vec *vec, char *buf, size_t cap)
 
 static void print_rule_line(const it_rule *rule)
 {
-    char events[64];
+    char events[256];
     char filters[256];
     char run[256];
     bool first = true;
@@ -166,7 +177,7 @@ static void print_config_summary(const it_config *cfg,
     printf("%-20s %s\n", "PATH", "EVENTS");
     printf("%-20s %s\n", "--------------------", "----------------------------");
     for (item_index = 0; item_index < cfg->watches.n; item_index++) {
-        char events[64];
+        char events[256];
         events_to_buf(cfg->watches.v[item_index].events, events, sizeof(events));
         printf("%-20s %s\n", cfg->watches.v[item_index].path.s, events);
     }
@@ -724,7 +735,7 @@ static void launch_due_settled_events(const it_config *cfg,
 {
     size_t pending_index = 0;
     while (pending_index < pending->n) {
-        char events[64];
+        char events[256];
         it_event_vars vars;
         const it_pending_event item = pending->v[pending_index];
         const it_rule *rule;
@@ -746,12 +757,12 @@ static void launch_due_settled_events(const it_config *cfg,
 }
 
 /**
- * @brief Match a normalized event against configured rules and run any tasks
+ * @brief Match exact inotify event bits against configured rules and run tasks
  *        referenced by matching rules.
  *
  * @param cfg Loaded configuration.
  * @param target Runtime watch target that produced the event.
- * @param mask Normalized internal event mask.
+ * @param mask Exact event bits selected from the inotify record.
  * @param name Optional entry name reported by inotify.
  */
 static void dispatch_event(const it_config *cfg, const it_watch_target *target,
@@ -759,7 +770,7 @@ static void dispatch_event(const it_config *cfg, const it_watch_target *target,
                            it_pending_event_vec *pending)
 {
     size_t rule_index;
-    char events[64];
+    char events[256];
     char *full_path;
     bool any = false;
     it_event_vars vars;
@@ -825,9 +836,9 @@ static void warn_check_findings(const it_config *cfg)
     size_t rule_index;
     for (rule_index = 0; rule_index < cfg->rules.n; rule_index++) {
         const it_rule *rule = &cfg->rules.v[rule_index];
-        if ((rule->events & IT_EVT_MODIFY) != 0 &&
+        if ((rule->events & IN_MODIFY) != 0 &&
             rule->settle_ms == IT_RULE_SETTLE_MS_DEFAULT) {
-            it_log_warn("rule %s watches MODIFY with settle_ms=0; active writes may launch repeated tasks",
+            it_log_warn("rule %s watches IN_MODIFY with settle_ms=0; active writes may launch repeated tasks",
                         rule->name.s);
         }
     }
@@ -959,7 +970,7 @@ int main(int argc, char **argv)
                     off += ev_size;
                     continue;
                 }
-                mask = it_runtime_event_mask_from_inotify(ev->mask);
+                mask = ev->mask & IN_ALL_EVENTS;
                 if (mask != 0)
                     dispatch_event(&cfg, target, mask, ev->len ? ev->name : "",
                                    &pending);

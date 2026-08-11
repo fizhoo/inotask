@@ -12,7 +12,7 @@ task announce {
 
 rule documents {
     watch = "/srv/documents"
-    events = [ CLOSE_WRITE ]
+    events = [ IN_CLOSE_WRITE ]
     include = [ "*.txt", "*.md" ]
     exclude = [ ".*", "*.tmp" ]
     run = [ "announce" ]
@@ -86,15 +86,27 @@ Required non-empty list. Supported names are:
 
 | Event | Meaning |
 |---|---|
-| `CREATE` | Entry created or moved into the watched directory |
-| `MODIFY` | File content modified; often noisy during active writes |
-| `DELETE` | Entry or watched object deleted |
-| `MOVE` | Simplified move/rename activity |
-| `ATTRIB` | Metadata such as permissions or timestamps changed |
-| `CLOSE_WRITE` | File opened for writing was closed |
+| `IN_ACCESS` | File was accessed |
+| `IN_MODIFY` | File content was modified |
+| `IN_ATTRIB` | Metadata changed |
+| `IN_CLOSE_WRITE` | Writable file was closed |
+| `IN_CLOSE_NOWRITE` | Non-writable file was closed |
+| `IN_OPEN` | File was opened |
+| `IN_MOVED_FROM` | Entry moved out of the watched directory |
+| `IN_MOVED_TO` | Entry moved into the watched directory |
+| `IN_CREATE` | Entry was created in the watched directory |
+| `IN_DELETE` | Entry was deleted from the watched directory |
+| `IN_DELETE_SELF` | Watched object was deleted |
+| `IN_MOVE_SELF` | Watched object was moved |
 
-Use `CLOSE_WRITE` for ingestion when work should start after the writer closes
-the file. Use `MODIFY` with `settle_ms` when repeated modifications should
+The Linux aggregate masks `IN_CLOSE`, `IN_MOVE`, and `IN_ALL_EVENTS` are also
+accepted. They expand to their constituent event bits in summaries and the
+`{event}` placeholder.
+
+Names and meanings match Linux inotify directly. For example, `IN_MOVED_TO`
+does not also count as `IN_CREATE`. Use `IN_CLOSE_WRITE` for ingestion when
+work should start after the writer closes the file. Use `IN_MODIFY` with
+`settle_ms` when repeated modifications should
 collapse into one launch after a quiet period.
 
 ### `run`
@@ -132,14 +144,14 @@ The rule runs once after the path remains quiet for the configured interval.
 ```cfg
 rule source_changed {
     watch = "/srv/source"
-    events = [ MODIFY ]
+    events = [ IN_MODIFY ]
     include = [ "*.c", "*.h" ]
     settle_ms = 250
     run = [ "rebuild" ]
 }
 ```
 
-`--check` warns when a rule watches `MODIFY` with `settle_ms = 0` because active
+`--check` warns when a rule watches `IN_MODIFY` with `settle_ms = 0` because active
 writes may launch repeated tasks.
 
 ## Argument Placeholders
@@ -151,7 +163,7 @@ Each task argument may contain zero or more placeholders:
 | `{watch_path}` | Configured watch path from the matching rule |
 | `{entry_name}` | Name reported relative to the watched directory, or empty |
 | `{full_path}` | Watch path joined with the entry name, or the watch path itself |
-| `{event}` | Normalized event names such as `CREATE` or `CLOSE_WRITE` |
+| `{event}` | Exact event names such as `IN_CREATE` or `IN_CLOSE_WRITE` |
 
 Placeholders may be embedded within other text:
 
@@ -169,6 +181,9 @@ Use check mode before deploying a configuration:
 ```sh
 ./inotask --check inotaskd.cfg
 ```
+
+Start from `inotaskd-sample.conf` for a fully commented example covering every
+configuration field, placeholder, supported event name, and aggregate mask.
 
 Check mode reads, parses, validates, builds the derived watch plan, prints the
 startup summary, and exits without opening inotify watches.
@@ -200,14 +215,14 @@ task report_change {
 
 rule files_ready {
     watch = "/srv/incoming"
-    events = [ CLOSE_WRITE ]
+    events = [ IN_CLOSE_WRITE ]
     exclude = [ ".*", "*.tmp", "*.swp" ]
     run = [ "ingest_file" ]
 }
 
 rule files_changing {
     watch = "/srv/incoming"
-    events = [ MODIFY ]
+    events = [ IN_MODIFY ]
     exclude = [ ".*", "*.tmp", "*.swp" ]
     settle_ms = 250
     run = [ "report_change" ]

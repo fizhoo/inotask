@@ -1,4 +1,6 @@
 inotask
+/inotaskd.cfg
+/tests/test_runtime
 *.o
 *.d
 

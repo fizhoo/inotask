@@ -9,7 +9,7 @@ than `systemd.path` without growing into a shell loop around `inotifywait`.
 
 ## Features
 
-- Rules for `CREATE`, `MODIFY`, `DELETE`, `MOVE`, `ATTRIB`, and `CLOSE_WRITE`
+- Exact Linux inotify event names and masks
 - Shell-free task execution with explicit executable paths and arguments
 - Runtime placeholders for event paths and names
 - Glob-style filename inclusion and exclusion
@@ -25,14 +25,21 @@ than `systemd.path` without growing into a shell loop around `inotifywait`.
 
 ```sh
 make
+cp inotaskd-sample.conf inotaskd.cfg
+# Edit inotaskd.cfg for this machine.
 ./inotask --check inotaskd.cfg
 ./inotask inotaskd.cfg
 ```
+
+`inotaskd-sample.conf` is the maintained, fully commented configuration
+reference. Local `inotaskd.cfg` files are ignored by Git. Make targets use the
+local file when it exists and fall back to the sample otherwise.
 
 Useful development targets:
 
 ```sh
 make check
+make test
 make run
 make scan
 make san
@@ -49,7 +56,7 @@ task ingest_file {
 
 rule files_ready {
     watch = "/srv/incoming"
-    events = [ CLOSE_WRITE ]
+    events = [ IN_CLOSE_WRITE ]
     exclude = [ ".*", "*.tmp", "*.swp" ]
     run = [ "ingest_file" ]
 }
@@ -58,11 +65,11 @@ rule files_ready {
 Closing `/srv/incoming/report.csv` after writing launches approximately:
 
 ```text
-/usr/bin/echo READY /srv/incoming/report.csv CLOSE_WRITE
+/usr/bin/echo READY /srv/incoming/report.csv IN_CLOSE_WRITE
 ```
 
-`CLOSE_WRITE` is usually preferable to `CREATE` or `MODIFY` for ingestion
-because it indicates that the writing side closed the file.
+`IN_CLOSE_WRITE` is usually preferable to `IN_CREATE` or `IN_MODIFY` for
+ingestion because it indicates that the writing side closed the file.
 
 ## Configuration
 
@@ -76,12 +83,13 @@ Task arguments may contain:
 - `{watch_path}`: configured watch path
 - `{entry_name}`: event name relative to the watched directory
 - `{full_path}`: watch path joined with the entry name
-- `{event}`: normalized event name
+- `{event}`: exact inotify event names
 
 Rules watching the same path share one merged inotify watch while retaining
 their own events, filters, settle policy, and task list.
 
-See `docs/config.md` for the complete format and validation rules.
+See `inotaskd-sample.conf` for an annotated configuration and `docs/config.md`
+for the complete format and validation rules.
 
 ## Runtime Behavior
 
@@ -128,7 +136,7 @@ mode. See `docs/systemd.md` for installation and operation.
 - No queue, concurrency bound, or worker pool
 - No queue-overflow recovery beyond reporting lost-event risk
 - No live config reload
-- Simplified move handling compared with raw inotify events
+- Move cookies are not yet exposed to tasks
 - One child is launched per matching task unless settling coalesces the event
 
 Planned work is tracked in `docs/roadmap.md`.
@@ -141,3 +149,4 @@ Planned work is tracked in `docs/roadmap.md`.
 - `docs/systemd.md`: service installation and operation
 - `docs/roadmap.md`: ordered feature roadmap
 - `docs/releasing.md`: release checklist
+- `inotaskd-sample.conf`: fully commented sample configuration

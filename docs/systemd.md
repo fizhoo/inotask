@@ -9,6 +9,8 @@ No journal-specific logging mode is required.
 Build and validate before installing:
 
 ```sh
+cp inotaskd-sample.conf inotaskd.cfg
+# Edit paths and tasks for this host.
 make
 make check CFG=inotaskd.cfg
 sudo make install install-systemd
@@ -27,6 +29,9 @@ Default locations:
 
 `install-config` is separate because it overwrites the installed configuration.
 A normal `make install` updates only the executable.
+
+The repository tracks `inotaskd-sample.conf`, not your host-specific
+`inotaskd.cfg`. The local file is ignored by Git.
 
 Before enabling the unit, confirm that every configured watch and executable is
 appropriate for the service host.

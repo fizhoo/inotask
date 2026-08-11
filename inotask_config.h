@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/inotify.h>
 
 #define IT_RULE_SETTLE_MS_DEFAULT 0u
 
@@ -24,21 +25,9 @@ typedef struct it_str {
 } it_str;
 
 /**
- * @brief Bitmask describing one or more filesystem events.
+ * @brief Bitmask containing Linux inotify event bits.
  */
 typedef uint32_t it_event_mask;
-
-/**
- * @brief Filesystem events understood by the configuration and runtime layers.
- */
-enum {
-    IT_EVT_CREATE = 1u << 0,
-    IT_EVT_MODIFY = 1u << 1,
-    IT_EVT_DELETE = 1u << 2,
-    IT_EVT_MOVE   = 1u << 3,
-    IT_EVT_ATTRIB = 1u << 4,
-    IT_EVT_CLOSE_WRITE = 1u << 5
-};
 
 /**
  * @brief Dynamic array of owned strings.

@@ -10,13 +10,14 @@ The current codebase includes:
 - rules-first configuration and merged watches
 - shell-free task execution and event placeholders
 - filename filters and per-path settling
-- normalized inotify event model
+- direct inotify event model
 - async child reaping and graceful shutdown
 - config check mode and executable validation
 - queue-overflow detection
 - severity-controlled stderr logging
 - systemd service and install targets
 - nonzero exits for fatal event-loop failures
+- source-based unit and integration test harness
 
 ## Immediate: Release Readiness
 
@@ -25,7 +26,6 @@ Goal: establish a trustworthy `v0.1.0` baseline before adding runtime policy.
 - finish the documentation consolidation
 - soak the development build under systemd
 - exercise `info` and `debug` logging
-- add a maintained test harness and remove obsolete binary test artifacts
 - run the checklist in `releasing.md`
 - fast-forward `main` and tag `v0.1.0`
 
@@ -77,8 +77,8 @@ Required work:
 
 ## Later
 
-- split move-from and move-to events and expose cookies
-- richer raw inotify event coverage
+- expose move cookies to tasks
+- expose output-only flags such as `IN_ISDIR`
 - config reload through parse-validate-swap
 - per-task user and group controls
 - deployment-specific systemd hardening examples

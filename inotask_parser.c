@@ -156,18 +156,27 @@ static bool parse_u32(parser *p, uint32_t *out, const char *name)
  */
 static bool event_bit(const it_token *t, it_event_mask *bit)
 {
-    if (token_is(t, "CREATE")) *bit = IT_EVT_CREATE;
-    else if (token_is(t, "MODIFY")) *bit = IT_EVT_MODIFY;
-    else if (token_is(t, "DELETE")) *bit = IT_EVT_DELETE;
-    else if (token_is(t, "MOVE")) *bit = IT_EVT_MOVE;
-    else if (token_is(t, "ATTRIB")) *bit = IT_EVT_ATTRIB;
-    else if (token_is(t, "CLOSE_WRITE")) *bit = IT_EVT_CLOSE_WRITE;
+    if (token_is(t, "IN_ACCESS")) *bit = IN_ACCESS;
+    else if (token_is(t, "IN_MODIFY")) *bit = IN_MODIFY;
+    else if (token_is(t, "IN_ATTRIB")) *bit = IN_ATTRIB;
+    else if (token_is(t, "IN_CLOSE_WRITE")) *bit = IN_CLOSE_WRITE;
+    else if (token_is(t, "IN_CLOSE_NOWRITE")) *bit = IN_CLOSE_NOWRITE;
+    else if (token_is(t, "IN_CLOSE")) *bit = IN_CLOSE;
+    else if (token_is(t, "IN_OPEN")) *bit = IN_OPEN;
+    else if (token_is(t, "IN_MOVED_FROM")) *bit = IN_MOVED_FROM;
+    else if (token_is(t, "IN_MOVED_TO")) *bit = IN_MOVED_TO;
+    else if (token_is(t, "IN_MOVE")) *bit = IN_MOVE;
+    else if (token_is(t, "IN_CREATE")) *bit = IN_CREATE;
+    else if (token_is(t, "IN_DELETE")) *bit = IN_DELETE;
+    else if (token_is(t, "IN_DELETE_SELF")) *bit = IN_DELETE_SELF;
+    else if (token_is(t, "IN_MOVE_SELF")) *bit = IN_MOVE_SELF;
+    else if (token_is(t, "IN_ALL_EVENTS")) *bit = IN_ALL_EVENTS;
     else return false;
     return true;
 }
 
 /**
- * @brief Parse an event list such as `[ CREATE, MODIFY ]`.
+ * @brief Parse an event list such as `[ IN_CREATE, IN_MODIFY ]`.
  *
  * This helper rejects empty lists, duplicate event names, and unknown event
  * identifiers.

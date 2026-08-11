@@ -2,7 +2,7 @@ CC = cc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -fanalyzer -g
 DEPFLAGS = -MMD -MP
 LDFLAGS =
-CFG ?= inotaskd.cfg
+CFG ?= $(if $(wildcard inotaskd.cfg),inotaskd.cfg,inotaskd-sample.conf)
 DESTDIR ?=
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
@@ -22,6 +22,8 @@ SRC = inotask_main.c inotask_load.c inotask_parser.c inotask_lexer.c \
       inotask_config.c inotask_validate.c inotask_runtime.c inotask_log.c
 OBJ = $(SRC:.c=.o)
 DEP = $(OBJ:.o=.d)
+TEST_BIN = tests/test_runtime
+TEST_SRC = tests/test_runtime.c inotask_config.c inotask_runtime.c inotask_log.c
 
 all: inotask
 
@@ -32,13 +34,20 @@ inotask: $(OBJ)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJ) $(DEP) inotask
+	rm -f $(OBJ) $(DEP) inotask $(TEST_BIN)
 
 run: inotask
 	./inotask $(CFG)
 
 check: inotask
 	./inotask --check $(CFG)
+
+$(TEST_BIN): $(TEST_SRC) inotask_config.h inotask_runtime.h inotask_log.h
+	$(CC) $(CFLAGS) -I. -o $@ $(TEST_SRC)
+
+test: inotask $(TEST_BIN)
+	./$(TEST_BIN)
+	sh tests/integration.sh ./inotask
 
 scan: clean
 	$(SCAN_BUILD) --status-bugs -o $(SCAN_REPORTS) \
@@ -69,6 +78,6 @@ install-systemd:
 	install -D -m 0644 contrib/systemd/inotask.service \
 		$(DESTDIR)$(SYSTEMD_UNIT_DIR)/inotask.service
 
-.PHONY: all clean run check scan san live edit install install-config install-systemd
+.PHONY: all clean run check test scan san live edit install install-config install-systemd
 
 -include $(DEP)

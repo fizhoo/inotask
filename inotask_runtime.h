@@ -131,22 +131,4 @@ bool it_runtime_session_open(const it_config *cfg, const it_runtime_plan *plan,
 const it_watch_target *it_runtime_session_target_for_wd(
     const it_runtime_plan *plan, const it_runtime_session *session, int wd);
 
-/**
- * @brief Convert an internal event mask to an inotify event mask.
- *
- * @param mask Internal event mask.
- *
- * @return Equivalent inotify event bitmask suitable for `inotify_add_watch()`.
- */
-uint32_t it_runtime_inotify_mask(it_event_mask mask);
-
-/**
- * @brief Convert an inotify event mask to an internal event mask.
- *
- * @param mask Inotify event bitmask.
- *
- * @return Equivalent internal event mask used by rule matching.
- */
-it_event_mask it_runtime_event_mask_from_inotify(uint32_t mask);
-
 #endif

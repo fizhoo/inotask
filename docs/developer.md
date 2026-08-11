@@ -69,7 +69,7 @@ Owns watch planning and the live inotify session:
 - watch-descriptor bindings
 - one inotify file descriptor
 - installation and cleanup of watches
-- conversion between internal and raw event masks
+- direct preservation of configured inotify event masks
 
 The current lookup is a linear scan of watch bindings. This is sufficient for
 the current non-recursive scale but should be reconsidered with recursion.
@@ -160,7 +160,7 @@ Each iteration:
 4. polls the inotify descriptor
 5. reads and bounds-checks raw event records
 6. handles queue overflow before watch lookup
-7. resolves and normalizes ordinary events
+7. resolves ordinary events and retains their exact inotify bits
 8. dispatches matching rules
 
 `SIGINT` or `SIGTERM` interrupts polling and leads to a zero-status cleanup.
@@ -172,7 +172,7 @@ cleanup path.
 A rule matches when:
 
 1. its configured path equals the runtime target path
-2. its event mask overlaps the normalized event
+2. its event mask overlaps the raw event's `IN_ALL_EVENTS` bits
 3. inclusion patterns pass, when present
 4. exclusion patterns do not match
 
@@ -202,13 +202,12 @@ children remain and logs each status.
 5. Implement runtime behavior.
 6. Update `config.md`, design notes, and tests.
 
-### Add an Event
+### Expose More Event Metadata
 
-1. Add an internal event bit.
-2. Parse and display its name.
-3. Map to and from inotify flags.
-4. Document normalization behavior.
-5. Test mask conversion and dispatch.
+Configurable event names come directly from Linux inotify. To expose metadata
+such as move cookies or output-only flags, extend event variables, placeholder
+expansion, diagnostics, documentation, and integration tests without inventing
+an alternate event vocabulary.
 
 ### Add Recursive Watching
 
@@ -219,8 +218,13 @@ nonlinear watch-descriptor lookup.
 
 ## Validation Workflow
 
-The repository currently relies on compiler analysis, config checks, and manual
-runtime smoke tests; it does not yet have a maintained automated test suite.
+The repository includes two maintained test layers:
+
+- `tests/test_runtime.c` checks exact event-mask preservation, config errors, derived
+  watch merging, and runtime-plan construction
+- `tests/integration.sh` launches the real daemon against temporary directories
+  and checks config errors, filtering, settling, logging, child failures, and
+  graceful shutdown
 
 Before publishing a change:
 
@@ -228,6 +232,7 @@ Before publishing a change:
 make clean
 make
 make check
+make test
 git diff --check
 ```
 

@@ -21,11 +21,13 @@ git diff --check
 make clean
 make
 make check
+make test
 ```
 
 Also check any release example configurations explicitly:
 
 ```sh
+./inotask --check inotaskd-sample.conf
 ./inotask --check inotaskd.cfg
 ```
 
@@ -83,7 +85,7 @@ Verify at minimum:
 - fatal service failure is eligible for `Restart=on-failure`
 
 Queue-overflow behavior is difficult to force reliably; confirm its handling
-through focused tests or code review until a maintained harness covers it.
+through focused tests or code review until the integration harness covers it.
 
 ## 7. Installation Smoke Test
 
@@ -91,7 +93,7 @@ Stage installation into a temporary root:
 
 ```sh
 make install install-config install-systemd \
-    DESTDIR=/tmp/inotask-stage CFG=inotaskd.cfg
+    DESTDIR=/tmp/inotask-stage CFG=inotaskd-sample.conf
 ```
 
 Confirm expected paths and permissions:

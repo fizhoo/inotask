@@ -130,48 +130,6 @@ void it_runtime_session_free(it_runtime_session *session)
 }
 
 /**
- * @brief Convert an internal event mask into the inotify flags needed to watch
- *        for the same logical events.
- *
- * @param mask Internal event bitmask.
- *
- * @return Inotify bitmask suitable for `inotify_add_watch()`.
- */
-uint32_t it_runtime_inotify_mask(it_event_mask mask)
-{
-    uint32_t out = 0;
-    if ((mask & IT_EVT_CREATE) != 0) out |= IN_CREATE | IN_MOVED_TO;
-    if ((mask & IT_EVT_MODIFY) != 0) out |= IN_MODIFY;
-    if ((mask & IT_EVT_DELETE) != 0) out |= IN_DELETE | IN_DELETE_SELF;
-    if ((mask & IT_EVT_MOVE) != 0) out |= IN_MOVED_FROM | IN_MOVED_TO | IN_MOVE_SELF;
-    if ((mask & IT_EVT_ATTRIB) != 0) out |= IN_ATTRIB;
-    if ((mask & IT_EVT_CLOSE_WRITE) != 0) out |= IN_CLOSE_WRITE;
-    return out;
-}
-
-/**
- * @brief Normalize raw inotify flags into the internal event model.
- *
- * Several inotify flags collapse into a single logical event such as
- * `IT_EVT_CREATE` or `IT_EVT_MOVE`.
- *
- * @param mask Raw inotify event flags.
- *
- * @return Internal event bitmask representing the observed event.
- */
-it_event_mask it_runtime_event_mask_from_inotify(uint32_t mask)
-{
-    it_event_mask out = 0;
-    if ((mask & (IN_CREATE | IN_MOVED_TO)) != 0) out |= IT_EVT_CREATE;
-    if ((mask & IN_MODIFY) != 0) out |= IT_EVT_MODIFY;
-    if ((mask & (IN_DELETE | IN_DELETE_SELF)) != 0) out |= IT_EVT_DELETE;
-    if ((mask & (IN_MOVED_FROM | IN_MOVED_TO | IN_MOVE_SELF)) != 0) out |= IT_EVT_MOVE;
-    if ((mask & IN_ATTRIB) != 0) out |= IT_EVT_ATTRIB;
-    if ((mask & IN_CLOSE_WRITE) != 0) out |= IT_EVT_CLOSE_WRITE;
-    return out;
-}
-
-/**
  * @brief Record the association between an inotify watch descriptor and a
  *        runtime watch target.
  *
@@ -212,7 +170,7 @@ bool it_runtime_session_open(const it_config *cfg, const it_runtime_plan *plan,
     if (session->fd < 0) return false;
     for (i = 0; i < plan->targets.n; i++) {
         const it_watch_target *target = &plan->targets.v[i];
-        mask = it_runtime_inotify_mask(cfg->watches.v[target->spec_index].events);
+        mask = cfg->watches.v[target->spec_index].events;
         wd = inotify_add_watch(session->fd, target->path.s, mask);
         if (wd < 0 || !push_binding(session, wd, i)) {
             it_runtime_session_free(session);

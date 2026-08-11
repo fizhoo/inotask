@@ -54,20 +54,13 @@ One inotify instance and file descriptor serve every configured path. Each
 installed watch receives a kernel watch descriptor (`wd`), which the runtime
 maps back to its concrete watch target.
 
-The public event names intentionally normalize several raw flags:
+Configuration event names and masks map directly to Linux inotify. The twelve
+primitive bits in `IN_ALL_EVENTS` are accepted by their exact `IN_*` names, as
+are the Linux aggregate masks `IN_CLOSE`, `IN_MOVE`, and `IN_ALL_EVENTS`.
 
-| Internal event | Relevant inotify flags |
-|---|---|
-| `CREATE` | `IN_CREATE`, `IN_MOVED_TO` |
-| `MODIFY` | `IN_MODIFY` |
-| `DELETE` | `IN_DELETE`, `IN_DELETE_SELF` |
-| `MOVE` | `IN_MOVED_FROM`, `IN_MOVED_TO`, `IN_MOVE_SELF` |
-| `ATTRIB` | `IN_ATTRIB` |
-| `CLOSE_WRITE` | `IN_CLOSE_WRITE` |
-
-This keeps common rules readable. The current `MOVE` event is less precise than
-the raw moved-from/moved-to distinction and does not expose move cookies to
-tasks.
+There is no normalization layer. `IN_CREATE` matches only `IN_CREATE`, while
+`IN_MOVED_TO` matches only `IN_MOVED_TO`. Move cookies and output-only flags
+such as `IN_ISDIR` are not yet exposed through task placeholders.
 
 ## Event Dispatch
 
@@ -75,7 +68,7 @@ For each raw event record, the main loop:
 
 1. handles `IN_Q_OVERFLOW` before watch lookup
 2. resolves `wd` to a runtime target
-3. normalizes the raw event mask
+3. retains the raw event's `IN_ALL_EVENTS` bits
 4. constructs event paths and placeholders
 5. scans rules that use the target path
 6. checks event overlap and filename filters
@@ -154,7 +147,7 @@ Configuration summaries go to stdout. Diagnostics go to stderr through a small
 severity-filtered logger.
 
 - `INFO` covers service and task lifecycle
-- `DEBUG` covers watch bindings, raw records, normalized events, matching, and
+- `DEBUG` covers watch bindings, raw records, exact event masks, matching, and
   settle updates
 - `WARN` and `ERROR` identify suspicious and failed operations
 
@@ -171,7 +164,7 @@ The current implementation deliberately does not provide:
 - config live reload
 - per-task credentials
 - loop detection
-- the full raw inotify event surface
+- move cookies and output-only inotify flags in task placeholders
 
 The order and rationale for extending these boundaries are maintained in
 `roadmap.md`.
