@@ -876,6 +876,7 @@ int main(int argc, char **argv)
         return 1;
     }
     print_config_summary(&cfg, &plan);
+    (void)fflush(stdout);
     if (check_only) {
         warn_check_findings(&cfg);
         printf("\nConfig check passed; runtime watches were not opened.\n");
